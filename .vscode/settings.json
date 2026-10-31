@@ -1,0 +1,8 @@
+{
+  "chat.tools.terminal.autoApprove": {
+    "/^git --no-pager status --short; find /dev -maxdepth 1 \\\\\\( -name 'cu\\.usb\\*' -o -name 'tty\\.usb\\*' \\\\\\) -print; ioreg -p IOUSB -w 0 \\| grep -E 'USB\\|Espressif\\|ESP32\\|Serial\\|JTAG'$/": {
+      "approve": true,
+      "matchCommandLine": true
+    }
+  }
+}
