@@ -1,0 +1,6 @@
+{
+  "core": "esp32:esp32@3.3.12",
+  "libraries": ["lvgl@8.4.0", "SensorLib@0.3.3", "ArduinoJson@7.4.3", "GFX Library for Arduino@1.6.9", "XPowersLib@0.2.6"],
+  "waveshareCommit": "225a62bff11b5d0a0b607873860d39485a9a9685",
+  "fqbn": "esp32:esp32:esp32s3:USBMode=hwcdc,CDCOnBoot=cdc,FlashSize=16M,PSRAM=opi,PartitionScheme=custom,EraseFlash=none"
+}

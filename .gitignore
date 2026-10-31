@@ -1,0 +1,7 @@
+.deps/
+node_modules/
+build/
+assets/pack/
+assets/source/
+firmware/ChimmyGoChi/generated/
+.DS_Store
