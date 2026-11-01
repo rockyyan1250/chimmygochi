@@ -131,12 +131,12 @@ if(!existsSync('.deps/fonts/NotoSansCJKtc-Regular.otf')) {
     'https://raw.githubusercontent.com/notofonts/noto-cjk/Sans2.004/Sans/OTF/TraditionalChinese/NotoSansCJKtc-Regular.otf'],{stdio:'inherit'});
 }
 if(!existsSync('.deps/fonts/OFL.txt')) execFileSync('curl',['-fL','-o','.deps/fonts/OFL.txt',
-  'https://raw.githubusercontent.com/notofonts/noto-cjk/Sans2.004/Sans/LICENSE'],{stdio:'inherit'});
+  'https://raw.githubusercontent.com/notofonts/noto-cjk/Sans2.004/LICENSE'],{stdio:'inherit'});
 const text=readFileSync('firmware/ChimmyGoChi/UiText.h','utf8')+
   readFileSync('firmware/ChimmyGoChi/App.cpp','utf8')+JSON.stringify(input)+
   '一二三四五六日年月星期上午下午零0123456789:-/%';
 execFileSync(process.execPath,['node_modules/lv_font_conv/lv_font_conv.js','--font','.deps/fonts/NotoSansCJKtc-Regular.otf',
-  '--size','24','--bpp','4','--format','lvgl','--no-compress','--symbols',Array.from(new Set(text)).join(''),
+  '--size','24','--bpp','4','--format','lvgl','--no-compress','--symbols',Array.from(new Set(text.replace(/[\x00-\x1f]/g,''))).join(''),
   '--lv-font-name','font_tc','--output','firmware/ChimmyGoChi/generated/font_tc.c'],{stdio:'inherit'});
 execFileSync(process.execPath,['node_modules/lv_font_conv/lv_font_conv.js','--font','.deps/fonts/NotoSansCJKtc-Regular.otf',
   '--size','88','--bpp','4','--format','lvgl','--no-compress','--symbols','0123456789:-',

@@ -5,8 +5,9 @@ import { once } from 'node:events';
 import { StringDecoder } from 'node:string_decoder';
 import sharp from 'sharp';
 import assert from 'node:assert/strict';
+import { findPort } from './platform.mjs';
 const mode=process.argv[2]||'status';
-const port=new SerialPort({path:process.env.PORT||'/dev/cu.usbmodem2301',baudRate:115200,autoOpen:false});
+const port=new SerialPort({path:await findPort(),baudRate:115200,autoOpen:false});
 const pending=new Map();let seq=0,buffer='',installing=false;
 const decoder=new StringDecoder('utf8');
 port.on('data',data=>{

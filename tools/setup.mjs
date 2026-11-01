@@ -1,11 +1,12 @@
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, existsSync, writeFileSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { cli, arduinoUser } from './platform.mjs';
 
-export const cli = process.env.ARDUINO_CLI || '/Applications/Arduino IDE.app/Contents/Resources/app/lib/backend/resources/arduino-cli';
 const deps = JSON.parse(readFileSync('firmware/dependencies.json'));
-mkdirSync('.deps/arduino', { recursive: true });
-writeFileSync('.deps/arduino-cli.yaml', `directories:\n  user: ${resolve('.deps/arduino')}\n`);
+mkdirSync(arduinoUser, { recursive: true });
+// Quoted forward-slash path keeps the YAML valid for Windows drive letters.
+writeFileSync('.deps/arduino-cli.yaml', `directories:\n  user: ${JSON.stringify(arduinoUser.replaceAll('\\', '/'))}\n`);
 const args = ['--config-file', resolve('.deps/arduino-cli.yaml')];
 const installed = execFileSync(cli, [...args, 'core', 'list'], { encoding: 'utf8' });
 if (!installed.includes('3.3.12')) throw Error('Install the pinned esp32:esp32@3.3.12 core first.');

@@ -7,7 +7,7 @@
     "setup": "node tools/setup.mjs",
     "assets": "node tools/assets.mjs",
     "check": "node tools/validate.mjs",
-    "test:battery": "mkdir -p build && c++ -std=c++11 -Wall -Wextra -Werror tools/battery-test.cpp -o build/battery-test && build/battery-test",
+    "test:battery": "node tools/battery-test.mjs",
     "build": "node tools/build.mjs",
     "upload": "node tools/build.mjs upload",
     "device": "node tools/device.mjs"

@@ -83,7 +83,7 @@ SSID・パスワードの登録用USBコマンドはあるが、タッチキー�
 
 ## 4. 開発環境の再現
 
-macOSのArduino IDE同梱CLIを既定で使用する。別のCLIなら `ARDUINO_CLI` で実行ファイルを指定。
+Arduino IDE 2の同梱CLIを既定で使用する（macOSは `/Applications`、Windowsはユーザー別または全ユーザーのインストール先を検索し、無ければPATHの `arduino-cli`）。別のCLIなら `ARDUINO_CLI` で実行ファイルを指定。
 Node.jsは22.12以上（開発確認は24）。依存は
 [package-lock.json](../package-lock.json) と [dependencies.json](../firmware/dependencies.json) に固定。
 
@@ -119,12 +119,29 @@ npm run device -- status
 UI用繁体字フォントと時計用数字フォントも生成する。
 `upload` は直前にビルドしたバイナリを書き込む。ソース変更後は必ず `build` を先に行う。
 
-ポートが違う場合：
+USBポートはEspressifのVID 303Aを持つ機器を自動検出する（Windowsでは `COM3` など）。
+複数接続している・検出できない場合は `PORT` で指定する。
 
 ```sh
 PORT=/dev/cu.usbmodemXXXX npm run upload
-PORT=/dev/cu.usbmodemXXXX npm run device -- status
 ```
+
+Windows PowerShellの場合：
+
+```powershell
+$env:PORT='COM3'; npm run upload
+```
+
+Windowsでは `npm run test:battery` にC++コンパイラー（MSVCの `cl`、MinGWの `g++`、`clang++` のいずれか）が必要。
+PATHに無い場合は `CXX` で実行ファイルを指定する。`cl` は「Developer PowerShell for VS」から実行する。
+`setup`・`assets` はWindows 10以降に標準搭載の `curl.exe` を使用する。
+Windowsでは専用ライブラリ・スケッチのコピー・`lv_conf.h`・ビルド中間ファイルを
+`%USERPROFILE%\.chimmygochi` に置く（場所は `CHIMMY_LOCAL` で変更可能）。
+OneDriveの同期対象フォルダー内では、ヘッダー検索のたびにクラウドファイルの確認が入り、ビルドが止まったように遅くなるため。
+AppData配下は、パッケージ版アプリのターミナルから実行すると別の場所へ振り替えられるので使わない。
+ESP32 core 3.xは数百のインクルードフォルダーを検索するため、Microsoft Defenderのリアルタイムスキャンでも大きく遅くなる。
+Windowsセキュリティの「除外」に `%LOCALAPPDATA%\Arduino15` と `%USERPROFILE%\.chimmygochi` のフォルダーを追加するとよい。
+macOSは従来どおり `.deps/arduino`・`build/`。
 
 本端末では通常のUSB RTSリセット後にROM書込待機へ残る問題が発生した。
 アップロードは115200 baudとwatchdog-resetを使用し、USB再列挙を待つようにしている。

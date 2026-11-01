@@ -18,7 +18,7 @@ Arduino / LVGLによる実機用プロトタイプを収録しています。
 
 ## ビルド・転送
 
-macOS、Node.js 22.12以上、Arduino CLI / ESP32 core 3.3.12が必要です。
+Windows または macOS、Node.js 22.12以上、Arduino IDE 2（同梱CLI）/ ESP32 core 3.3.12が必要です。
 既存Flashのバックアップと接続先の確認を済ませてから書き込んでください。
 
 ```sh
@@ -33,8 +33,8 @@ npm run device -- install
 npm run device -- status
 ```
 
-既定USBポートは `/dev/cu.usbmodem2301`。違う場合は各コマンドに
-`PORT=/dev/cu.usbmodemXXXX` を指定します。素材転送は既存ファイルを上書きせず、
+USBポートはESP32-S3（VID 303A）を自動検出します。複数ある・見つからない場合は
+環境変数 `PORT`（例：`COM3`、`/dev/cu.usbmodem2301`）を指定します。素材転送は既存ファイルを上書きせず、
 新規パックの検証後に切り替えます。SDカードのフォーマットは行いません。
 
 ## 設計資料
