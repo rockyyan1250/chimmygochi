@@ -1,8 +1,6 @@
 .deps/
 node_modules/
 build/
-assets/pack/
-assets/source/
-assets/chimmy/
+assets/
 firmware/ChimmyGoChi/generated/
 .DS_Store

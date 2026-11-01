@@ -118,7 +118,7 @@ try {
     const control=async value=>{await request('control',{value});await wait(1000);return state();};
     const initial=await state();
     assert(initial.sd&&initial.touch&&initial.audio&&initial.pmic&&initial.rtc_valid);
-    assert(initial.charging_disabled_verified&&!initial.save_locked&&initial.pack);
+    assert(initial.charge_configured&&!initial.save_locked&&initial.pack);
     await request('screen',{on:true});
     for(const [id,page] of [[1,0],[2,1],[4,3],[9,7]])assert.equal((await control(id)).page,page);
     await control(1);

@@ -14,7 +14,8 @@ extern Arduino_CO5300 display;
 extern XPowersPMU pmu;
 extern TouchDrvCST92xx touch;
 extern bool pmuOk, touchOk, audioOk, displayOn;
-extern bool chargingDisabled;
+extern bool chargeConfigured,chargeHot;  // charge limits verified; paused for heat
+void chargeGuard();
 extern uint32_t lastInput;
 extern uint32_t touchCount, flushCount, maxFlushUs;
 extern std::atomic<uint32_t> audioFailures;

@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 const dir=process.argv[2]||'assets/pack';
 const m=JSON.parse(readFileSync(`${dir}/manifest.json`));
-if(m.schema!==2||!m.atlas||!(m.backgrounds?.length>=1&&m.backgrounds.length<=3)) throw Error('Invalid manifest');
+if(m.schema!==2||!m.atlas||!(m.backgrounds?.length>=1&&m.backgrounds.length<=8)) throw Error('Invalid manifest');
 for(const [name,meta] of Object.entries(m.files)) {
   if(!/^[a-z0-9_.-]{1,48}$/.test(name)||name.includes('..')) throw Error('Unsafe filename');
   const b=readFileSync(`${dir}/${name}`);

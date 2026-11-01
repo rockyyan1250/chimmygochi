@@ -95,11 +95,11 @@ const extraRooms = {
 for(const [name,svgText] of Object.entries(extraRooms))
   if(!existsSync(`assets/source/${name}`)) await sharp(Buffer.from(svgText)).png().toFile(`assets/source/${name}`);
 const input=JSON.parse(readFileSync(source));
-// Schema 2 input: frames + 1..3 backgrounds. Schema 1 input (outfits): its first outfit and background.
+// Schema 2 input: frames + 1..8 backgrounds. Schema 1 input (outfits): its first outfit and background.
 const frames=input.schema===2?input.frames:input.outfits?.[0]?.frames;
 const backgrounds=input.schema===2?input.backgrounds:[input.background];
-if(!Array.isArray(frames)||!Array.isArray(backgrounds)||backgrounds.length<1||backgrounds.length>3||backgrounds.some(b=>!b))
-  throw Error('Need "frames" (1..16 PNGs) and "backgrounds" (1..3 PNGs)');
+if(!Array.isArray(frames)||!Array.isArray(backgrounds)||backgrounds.length<1||backgrounds.length>8||backgrounds.some(b=>!b))
+  throw Error('Need "frames" (1..16 PNGs) and "backgrounds" (1..8 PNGs)');
 const manifest={schema:2,id:input.id,placeholder:input.placeholder!==false,atlas:'chimmy.cga',backgrounds:[],clips:input.clips,sounds:{},files:{}};
 async function image(names, dest, bpp, thumb=0) {
   if(!names.length||names.length>16) throw Error('1..16 frames per atlas required');
@@ -131,7 +131,7 @@ function save(name,data) {
 await image(frames,'chimmy.cga',3);
 for(const [i,b] of backgrounds.entries()) {
   await image([b],`room${i}.cga`,2);
-  await image([b],`thumb${i}.cga`,2,120);
+  await image([b],`thumb${i}.cga`,2,96);
   manifest.backgrounds.push({image:`room${i}.cga`,thumb:`thumb${i}.cga`});
 }
 function checkClip(c,a) {

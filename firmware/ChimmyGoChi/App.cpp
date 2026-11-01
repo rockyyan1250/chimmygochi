@@ -120,7 +120,8 @@ static void updateBattery() {
     lv_obj_set_width(batteryFill,std::max(level?2:0,30*level/100));
     lv_obj_set_style_bg_color(batteryFill,color(level<=20?0xff6b6b:0x5cc27a),0);
   }
-  // Charging is disabled until the battery is identified, so USB power usually shows the plug.
+  // Plug: USB power only (full, paused for heat, or charge limits unverified); bolt: charging.
+  chargeGuard();
   const bool usb=pmuOk&&pmu.isVbusIn(),charge=pmuOk&&pmu.isCharging();
   if(!batterySampled||usb!=usbPower||charge!=charging) {
     usbPower=usb;charging=charge;
@@ -201,9 +202,13 @@ static int charSize() {return pack?pack->atlasHeader.width:256;}
 static int gameY() {return 356-charSize();}
 static int restX() {return (480-charSize())/2;}
 static int restY() {return 352-charSize()+16;}
+static int homeY() {return page==Game?gameY():restY();}
+// Floor band per page: on the game page the feet stay above the stat chips (y~356).
+static int wanderMinY() {return page==Game?gameY()-28:restY()-40;}
+static int wanderMaxY() {return page==Game?gameY():restY()+28;}
 static void resetWander() {
   wander=Wander::Rest;wanderUntil=millis()+2500;lastWanderMs=millis();
-  wanderX=targetX=restX();wanderY=targetY=restY();
+  wanderX=targetX=restX();wanderY=targetY=homeY();
 }
 static void wanderTick() {
   const uint32_t now=millis();
@@ -217,8 +222,18 @@ static void wanderTick() {
     if(pack->sit.count&&esp_random()%2) {wander=Wander::Sit;wanderUntil=now+6000+esp_random()%6000;setAction(ActSit);}
     else {wander=Wander::Rest;wanderUntil=now+3000+esp_random()%4000;setAction(0);}
   } else if(elapsed(wanderUntil)) {
-    const int size=charSize(),minY=restY()-40,maxY=restY()+28;
-    targetX=esp_random()%(481-size);targetY=minY+esp_random()%(maxY-minY+1);
+    // The frame's transparent margin may leave the screen; the body stays inside. Each walk
+    // covers at least 120px, turning back when the far side is too close.
+    const int minX=-30,maxX=480-charSize()+30,minY=wanderMinY(),maxY=wanderMaxY();
+    // int() keeps the negative minX out of unsigned arithmetic with esp_random().
+    auto random=[](int n){return int(esp_random()%unsigned(n));};
+    targetX=minX+random(maxX-minX+1);
+    if(std::fabs(targetX-wanderX)<120) {
+      const bool right=wanderX+120<=maxX&&(wanderX-120<minX||random(2));
+      targetX=right?std::min<float>(maxX,wanderX+120+random(60)):std::max<float>(minX,wanderX-120-random(60));
+    }
+    targetX=std::max<float>(minX,std::min<float>(maxX,targetX));
+    targetY=minY+random(maxY-minY+1);
     wander=Wander::Walk;if(action!=0&&!pack->walk.count) setAction(0);
   } else if(wander==Wander::Sit&&action!=ActSit) setAction(ActSit);
 }
@@ -306,13 +321,16 @@ static void showPage(int next) {
     }
   } else if(page==Rooms) {
     topRow(false);
-    const unsigned count=pack?pack->backgroundCount:0;
-    const int left=(480-int(count)*128-(int(count)-1)*14)/2;
+    // Up to 8 thumbnails, 4 per row, rows centred vertically between the top row and the corners.
+    const unsigned count=pack?pack->backgroundCount:0,cols=std::min(count,4u),rows=(count+3)/4;
+    const int top=rows>1?96:150;
     for(unsigned i=0;i<count;i++) {
-      auto b=lv_btn_create(screen);lv_obj_set_pos(b,left+i*142,150);lv_obj_set_size(b,128,128);
-      lv_obj_set_style_radius(b,22,0);lv_obj_set_style_pad_all(b,0,0);lv_obj_set_style_shadow_width(b,0,0);
+      const unsigned inRow=i/4<rows-1?cols:count-(rows-1)*4;
+      const int left=(480-int(inRow)*104-(int(inRow)-1)*10)/2;
+      auto b=lv_btn_create(screen);lv_obj_set_pos(b,left+(i%4)*114,top+(i/4)*120);lv_obj_set_size(b,104,104);
+      lv_obj_set_style_radius(b,18,0);lv_obj_set_style_pad_all(b,0,0);lv_obj_set_style_shadow_width(b,0,0);
       lv_obj_set_style_bg_color(b,color(0xffffff),0);lv_obj_set_style_clip_corner(b,true,0);
-      lv_obj_set_style_border_width(b,i==pack->selected?5:2,0);
+      lv_obj_set_style_border_width(b,i==pack->selected?4:2,0);
       lv_obj_set_style_border_color(b,color(i==pack->selected?0xff8fab:0xe0d8cc),0);
       lv_obj_add_event_cb(b,event,LV_EVENT_CLICKED,reinterpret_cast<void *>(static_cast<intptr_t>(Room0+i)));
       if(pack->thumbs[i].data) {
@@ -344,7 +362,7 @@ static void showPage(int next) {
     const lv_img_dsc_t *actions[]={&icon_set_clock,&icon_set_sync,&icon_set_reload,&icon_set_info};
     const int ids[]={EditTime,Sync,Reload,GoStatus};
     for(int i=0;i<4;i++) iconButton(panel,actions[i],20+i*100,474,88,56,ids[i],0xede7fb);
-    label(panel,chargingDisabled?"充電停用：待確認電池規格":"充電狀態未確認：請拔除電池",24,548,384,0x7a6e7f);
+    label(panel,chargeConfigured?"充電 4.1V / 300mA":"充電停用",24,548,384,0x7a6e7f);
     if(saveLocked) button(panel,"資料損壞：確認重設",20,590,392,60,ResetConfirm,0xffc7c7);
     box(panel,0,saveLocked?650:590,10,20,0xfffaf3,0);  // bottom margin when scrolled to the end
     lv_obj_update_layout(panel);lv_obj_scroll_to_y(panel,keepScroll,LV_ANIM_OFF);
@@ -508,20 +526,20 @@ static void updateAnimation() {
   if((page!=Game&&page!=Ambient)||!displayOn||transfer.active) return;
   const uint32_t delta=millis()-actionAt;
   if(pack&&character) {
-    if(page==Ambient) wanderTick();
+    wanderTick();
     const Clip &c=clipFor(action);uint32_t total=0;for(unsigned i=0;i<c.count;i++)total+=c.durations[i];
     if(!total)return;
     if(!c.loop&&delta>=total) {setAction(pet.sleeping?4:0);return;}
     uint32_t phase=delta%total;unsigned index=0;
     while(index+1<c.count&&phase>=c.durations[index]) {phase-=c.durations[index];index++;}
     drawFrame(c.frames[index]);
-    const bool walking=page==Ambient&&wander==Wander::Walk&&resting(action)&&!pet.sleeping;
+    const bool walking=wander==Wander::Walk&&resting(action)&&!pet.sleeping;
     const bool lively=action==3||action==7||(action>=ActTap0&&action<ActWalk);
     // Walking hops a little on each step; sitting and sleeping stay still.
     const int bounce=walking?-int(std::fabs(std::sin(millis()/170.0))*7):
       action==ActSit||action==4?0:int(std::sin(delta/220.0)*(lively?8:2));
-    const bool home=page==Game||pet.sleeping;
-    lv_obj_set_pos(character,home?restX():int(wanderX),(page==Game?gameY():home?restY():int(wanderY))+bounce);
+    const bool home=pet.sleeping;  // asleep: stays at the centre spot
+    lv_obj_set_pos(character,home?restX():int(wanderX),(home?homeY():int(wanderY))+bounce);
   } else if(fallback) {
     if(action!=0&&action!=4&&delta>1500) setAction(pet.sleeping?4:0);
     const bool blink=pet.sleeping||(millis()%3000<160);
@@ -548,7 +566,7 @@ static void updateLabels() {
     snprintf(b,sizeof(b),"CHIMMY GOCHI 0.2\n親密 %lu  /  睡意 %ld\n亮度 %u  /  音量 %u\nSD %s  /  RTC %s\n觸控 %s  /  音效 %s\n電量 %s %s  /  %s\n保存 %llu  /  %s\nPSRAM %u KB",
       (unsigned long)pet.bond,(long)pet.sleepy/100,pet.brightness,pet.volume,
       assets.ready?"OK":"ERROR",clockQuality?"OK":"--",touchOk?"OK":"ERROR",audioOk?"OK":"ERROR",
-      batteryText,usbPower?"USB":"",chargingDisabled?"充電停用":"充電未確認",(unsigned long long)pet.generation,saveLocked?"ERROR":dirty?"保存中":"已保存",ESP.getFreePsram()/1024);
+      batteryText,usbPower?"USB":"",chargeHot?"充電暫停":chargeConfigured?"充電 4.1V":"充電停用",(unsigned long long)pet.generation,saveLocked?"ERROR":dirty?"保存中":"已保存",ESP.getFreePsram()/1024);
     lv_label_set_text(infoLabel,b);
   }
   if(page==SetTime) {
@@ -611,7 +629,8 @@ static void command(JsonDocument &request,JsonDocument &reply) {
   if(strcmp(cmd,"status")==0) {
     ok=true;reply["version"]="0.2.0";reply["page"]=page;reply["sd"]=assets.ready;
     reply["psram"]=ESP.getPsramSize();reply["psram_free"]=ESP.getFreePsram();reply["heap"]=ESP.getFreeHeap();
-    reply["touch"]=touchOk;reply["audio"]=audioOk;reply["pmic"]=pmuOk;reply["charging_disabled_verified"]=chargingDisabled;
+    reply["touch"]=touchOk;reply["audio"]=audioOk;reply["pmic"]=pmuOk;reply["charge_configured"]=chargeConfigured;reply["charge_paused_hot"]=chargeHot;
+    reply["pmic_temp_c"]=pmuOk?pmu.getTemperature():0;reply["battery_mv"]=pmuOk?pmu.getBattVoltage():0;
     reply["battery_state"]=battery::stateName(batteryReading.state);
     if(batteryReading.state==battery::State::Ready)reply["battery_percent"]=batteryReading.percent;
     else reply["battery_percent"]=nullptr;

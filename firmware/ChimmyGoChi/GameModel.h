@@ -109,7 +109,7 @@ inline bool decode(const Record &r, State &out) {
   s.background = r[52]; s.brightness = r[53]; s.volume = r[54]; s.startMode = Mode(r[55]);
   s.sleeping = r[56]; s.autoOff = r[57]; s.hour24 = r[58]; s.nightMute = r[59]; s.offlineHours = r[60];
   if (s.hunger > 10000 || s.mood > 10000 || s.energy > 10000 || s.sleepy > 10000 ||
-      s.bond > 1000000 || s.remainder >= 60 || s.background >= 3 || s.volume > 100 ||
+      s.bond > 1000000 || s.remainder >= 60 || s.background >= 8 || s.volume > 100 ||
       s.brightness < 20 || s.brightness > 220 || r[55] > 2 || r[56] > 1 || r[57] > 1 ||
       r[58] > 1 || r[59] > 1 || s.offlineHours < 1 || s.offlineHours > 24 ||
       (s.savedUtc != 0 && !validUtc(s.savedUtc))) return false;

@@ -21,7 +21,7 @@ struct Blob {
   size_t size=0;
   ~Blob(){free(data);}
 };
-constexpr unsigned kMaxBackgrounds=3,kMaxTaps=6;
+constexpr unsigned kMaxBackgrounds=8,kMaxTaps=6;
 struct AssetPack {
   // Shared so a background change can keep the (multi-MB) character atlas instead of loading a copy.
   std::shared_ptr<Blob> atlas;

@@ -41,7 +41,7 @@ if (!existsSync(configPath)) {
     sit: { frames: ['sit_normal.png','sit_blink.png'], durations: [3000,150], loop: true, sound: '' },
     size: 288,
     placeholder: true,
-    // 1..3 selectable rooms; any size, cropped to a square and scaled to 480x480.
+    // 1..8 selectable rooms; any size, cropped to a square and scaled to 480x480.
     backgrounds: ['../source/room.png', '../source/garden.png', '../source/night.png'],
     sounds: { tap: '../source/tap.wav', happy: '../source/happy.wav', eat: '../source/eat.wav', dress: '../source/dress.wav' },
   }, null, 2));
@@ -53,7 +53,7 @@ const config = JSON.parse(readFileSync(configPath, 'utf8'));
 const SIZE = config.size || 288, HEIGHT = Math.round(SIZE * 0.855), FOOT = SIZE - 4, CENTER = SIZE / 2;
 if (SIZE > 288) throw Error('chimmy.json: size must be <= 288 (16 frames must fit in 4MiB)');
 const backgrounds = config.backgrounds || [config.background];
-if (!backgrounds.length || backgrounds.length > 3 || backgrounds.some(b => !b)) throw Error('chimmy.json: 1..3 backgrounds required');
+if (!backgrounds.length || backgrounds.length > 8 || backgrounds.some(b => !b)) throw Error('chimmy.json: 1..8 backgrounds required');
 
 // Flood-fills the background from the image border so white face/hands inside the outline stay.
 function removeBackground(data, w, h, holes = []) {

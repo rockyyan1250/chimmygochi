@@ -9,7 +9,7 @@ Arduino_CO5300 display(&displayBus,39,0,480,480,0,0,0,0);
 XPowersPMU pmu;
 TouchDrvCST92xx touch;
 bool pmuOk=false,touchOk=false,audioOk=false,displayOn=true;
-bool chargingDisabled=false;
+bool chargeConfigured=false,chargeHot=false;
 uint32_t lastInput=0,touchCount=0,flushCount=0,maxFlushUs=0;
 std::atomic<uint32_t> audioFailures{0};
 uint16_t *screenPixels=nullptr;
@@ -56,13 +56,23 @@ bool boardBegin() {
   Wire.setTimeOut(30);
   pmuOk=pmu.begin(Wire,AXP2101_SLAVE_ADDRESS,15,14);
   if(pmuOk) {
+    // Main cell: 1S LiPo 3.7V 1000mAh (103030, MX1.25). Conservative 4.1V / 300mA (0.3C) because
+    // the board has no battery thermistor; the coin-cell (backup) charger stays off.
     pmu.disableCellbatteryCharge();
     pmu.disableButtonBatteryCharge();
     pmu.enableGauge();
+    pmu.disableTSPinMeasure();pmu.enableTemperatureMeasure();
+    pmu.setChargeTargetVoltage(XPOWERS_AXP2101_CHG_VOL_4V1);
+    pmu.setChargerConstantCurr(XPOWERS_AXP2101_CHG_CUR_300MA);
+    pmu.setPrechargeCurr(XPOWERS_AXP2101_PRECHARGE_50MA);
+    pmu.setChargerTerminationCurr(XPOWERS_AXP2101_CHG_ITERM_25MA);
+    // Enable only when the limits read back exactly; otherwise charging stays off.
+    if(pmu.getChargeTargetVoltage()==XPOWERS_AXP2101_CHG_VOL_4V1&&
+       pmu.getChargerConstantCurr()==XPOWERS_AXP2101_CHG_CUR_300MA) pmu.enableCellbatteryCharge();
     Wire.beginTransmission(AXP2101_SLAVE_ADDRESS);Wire.write(0x18);
     if(Wire.endTransmission(false)==0&&Wire.requestFrom(uint8_t(AXP2101_SLAVE_ADDRESS),size_t(1))==1)
-      chargingDisabled=(Wire.read()&0x06)==0;
-    if(!chargingDisabled) Serial.println("ERROR charging disable not verified; disconnect unknown battery");
+      chargeConfigured=(Wire.read()&0x06)==0x02;  // bit1 cell charge on, bit2 coin cell off
+    if(!chargeConfigured) {pmu.disableCellbatteryCharge();Serial.println("ERROR charge limits not verified; charging left off");}
     if(!pmu.enableBattDetection()) Serial.println("ERROR battery detection unavailable");
     pmu.enableBattVoltageMeasure(); pmu.enableVbusVoltageMeasure();
     pmu.setPowerKeyPressOffTime(XPOWERS_POWEROFF_6S);
@@ -110,6 +120,14 @@ battery::Reading readBattery() {
   const int gauge=pmu.readRegister(XPOWERS_AXP2101_CHARGE_GAUGE_WDT_CTRL);
   const int percent=pmu.readRegister(XPOWERS_AXP2101_BAT_PERCENT_DATA);
   return battery::decode(detection,status,gauge,percent);
+}
+// Without a battery thermistor the PMIC die temperature is the only heat signal:
+// pause charging above 60C and resume below 50C.
+void chargeGuard() {
+  if(!pmuOk||!chargeConfigured) return;
+  const float t=pmu.getTemperature();
+  if(!chargeHot&&t>60) {pmu.disableCellbatteryCharge();chargeHot=true;Serial.printf("ERROR PMIC %.1fC: charging paused\n",t);}
+  else if(chargeHot&&t<50) {pmu.enableCellbatteryCharge();chargeHot=false;Serial.println("NOTICE charging resumed");}
 }
 void setDisplay(bool on,uint8_t brightness) {
   displayOn=on;
