@@ -3,5 +3,6 @@ node_modules/
 build/
 assets/pack/
 assets/source/
+assets/chimmy/
 firmware/ChimmyGoChi/generated/
 .DS_Store

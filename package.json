@@ -6,6 +6,7 @@
   "scripts": {
     "setup": "node tools/setup.mjs",
     "assets": "node tools/assets.mjs",
+    "prep-images": "node tools/prep-images.mjs",
     "check": "node tools/validate.mjs",
     "test:battery": "node tools/battery-test.mjs",
     "build": "node tools/build.mjs",
