@@ -41,17 +41,17 @@ try {
     const wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
     const state=()=>request('status');
     const initial=await state();
-    const restore=[1,2,3,4,5,6,7,9][initial.page];
+    const restore={0:1,1:2,3:4,4:5,5:6,6:7,7:9}[initial.page];
     assert(restore&&!initial.bubble_game&&initial.page!==8&&!initial.asset_loading,
       'Finish the current game, time edit or asset load before verifying');
     const checkState=s=>{
       assert(['ready','disconnected','unavailable'].includes(s.battery_state),'Battery diagnostics unavailable');
       if(s.battery_state==='ready') {
         assert(Number.isInteger(s.battery_percent)&&s.battery_percent>=0&&s.battery_percent<=100);
-        assert.equal(s.battery_text,`電量 ${s.battery_percent}%`);
+        assert.equal(s.battery_text,`${s.battery_percent}%`);
       } else {
         assert.equal(s.battery_percent,null);
-        assert.equal(s.battery_text,s.battery_state==='disconnected'?'電量 --':'電量 ERR');
+        assert.equal(s.battery_text,s.battery_state==='disconnected'?'--':'ERR');
       }
       assert.equal(s.battery_visible,true);
       assert.equal(s.battery_clickable,false);
@@ -62,16 +62,16 @@ try {
       await request('capture_begin');
       try {
         const parts=[];
-        for(let row=16;row<40;row+=4) {
+        for(let row=16;row<60;row+=4) {  // battery pill: x 164..316, y 16..60
           const pixels=Buffer.from((await request('capture_row',{row})).hex,'hex');
           assert.equal(pixels.length,480*4*2);
-          for(let y=0;y<4;y++)parts.push(pixels.subarray((y*480+230)*2,(y*480+348)*2));
+          for(let y=0;y<4;y++)parts.push(pixels.subarray((y*480+164)*2,(y*480+316)*2));
         }
         return Buffer.concat(parts);
       } finally {await request('capture_end');}
     };
-    const pages=[[1,0,'game'],[2,1,'ambient'],[3,2,'clock'],[4,3,'settings'],
-      [5,4,'foods'],[6,5,'toys'],[7,6,'outfits'],[9,7,'status'],[59,8,'set-time']];
+    const pages=[[1,0,'game'],[2,1,'ambient'],[4,3,'settings'],
+      [5,4,'foods'],[6,5,'toys'],[7,6,'rooms'],[9,7,'status'],[59,8,'set-time']];
     const skipped=[];
     if(!initial.sleeping&&initial.energy>=800&&!initial.save_locked)pages.push([31,5,'bubble']);
     else skipped.push('bubble: pet must be awake with enough energy and an unlocked save');
@@ -120,7 +120,7 @@ try {
     assert(initial.sd&&initial.touch&&initial.audio&&initial.pmic&&initial.rtc_valid);
     assert(initial.charging_disabled_verified&&!initial.save_locked&&initial.pack);
     await request('screen',{on:true});
-    for(const [id,page] of [[1,0],[2,1],[3,2],[4,3],[9,7]])assert.equal((await control(id)).page,page);
+    for(const [id,page] of [[1,0],[2,1],[4,3],[9,7]])assert.equal((await control(id)).page,page);
     await control(1);
     for(const [id,page] of [[5,4],[6,5],[7,6]]) {
       assert.equal((await control(id)).page,page);
@@ -143,11 +143,12 @@ try {
     assert((await control(31)).bubble_game);
     for(let i=0;i<5;i++)await control(67);
     const played=await state();assert(!played.bubble_game);assert.equal(played.bond,beforePlay.bond+16);
-    for(const outfit of [1,2,initial.outfit]) {
-      await control(1);await control(40+outfit);
+    const rooms=[...Array(initial.background_count).keys()].filter(i=>i!==initial.background);
+    for(const room of [...rooms,initial.background]) {
+      await control(1);await control(40+room);
       let loaded;
       for(let i=0;i<30;i++){loaded=await state();if(!loaded.asset_loading)break;await wait(500);}
-      assert(!loaded.asset_loading&&loaded.pack);assert.equal(loaded.outfit,outfit);
+      assert(!loaded.asset_loading&&loaded.pack);assert.equal(loaded.background,room);
     }
     await assert.rejects(request('control',{value:19}),/invalid control/);
     await assert.rejects(request('pack_begin',{name:'../invalid'}),/invalid pack name/);
@@ -162,7 +163,7 @@ try {
     assert(saved.heap>30000&&saved.psram_free>2*1024*1024);
     await request('reboot');await wait(7000);
     const rebooted=await state();
-    assert.equal(rebooted.bond,saved.bond);assert.equal(rebooted.outfit,saved.outfit);
+    assert.equal(rebooted.bond,saved.bond);assert.equal(rebooted.background,saved.background);
     assert.equal(rebooted.sleeping,saved.sleeping);assert.equal(rebooted.pack,saved.pack);
     assert(rebooted.rtc_valid&&Math.abs(rebooted.rtc_utc-rebooted.utc)<=1);
     assert(rebooted.save_generation>saved.save_generation);

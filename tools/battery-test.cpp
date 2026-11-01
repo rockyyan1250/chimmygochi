@@ -12,18 +12,18 @@ int main() {
     const char *name;
   };
   const Case cases[]={
-    {1,8,8,0,State::Ready,0,"電量 0%","ready"},
-    {1,8,8,20,State::Ready,20,"電量 20%","ready"},
-    {1,8,8,100,State::Ready,100,"電量 100%","ready"},
-    {1,0,-1,-1,State::Disconnected,-1,"電量 --","disconnected"},
-    {-1,8,8,50,State::Unavailable,-1,"電量 ERR","unavailable"},
-    {0,8,8,50,State::Unavailable,-1,"電量 ERR","unavailable"},
-    {1,-1,8,50,State::Unavailable,-1,"電量 ERR","unavailable"},
-    {1,8,-1,50,State::Unavailable,-1,"電量 ERR","unavailable"},
-    {1,8,0,50,State::Unavailable,-1,"電量 ERR","unavailable"},
-    {1,8,8,-1,State::Unavailable,-1,"電量 ERR","unavailable"},
-    {1,8,8,101,State::Unavailable,-1,"電量 ERR","unavailable"},
-    {1,8,8,255,State::Unavailable,-1,"電量 ERR","unavailable"}
+    {1,8,8,0,State::Ready,0,"0%","ready"},
+    {1,8,8,20,State::Ready,20,"20%","ready"},
+    {1,8,8,100,State::Ready,100,"100%","ready"},
+    {1,0,-1,-1,State::Disconnected,-1,"--","disconnected"},
+    {-1,8,8,50,State::Unavailable,-1,"ERR","unavailable"},
+    {0,8,8,50,State::Unavailable,-1,"ERR","unavailable"},
+    {1,-1,8,50,State::Unavailable,-1,"ERR","unavailable"},
+    {1,8,-1,50,State::Unavailable,-1,"ERR","unavailable"},
+    {1,8,0,50,State::Unavailable,-1,"ERR","unavailable"},
+    {1,8,8,-1,State::Unavailable,-1,"ERR","unavailable"},
+    {1,8,8,101,State::Unavailable,-1,"ERR","unavailable"},
+    {1,8,8,255,State::Unavailable,-1,"ERR","unavailable"}
   };
   for(const auto &test:cases) {
     const auto reading=battery::decode(test.detection,test.status,test.gauge,test.percent);

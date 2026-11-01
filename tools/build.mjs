@@ -10,7 +10,9 @@ if (includeDir !== resolve('firmware')) {
 }
 cpSync('firmware/ChimmyGoChi', sketch, { recursive: true });
 cpSync('firmware/ChimmyGoChi/generated/font_tc.c', `${sketch}/font_tc.c`);
-cpSync('firmware/ChimmyGoChi/generated/font_clock.c', `${sketch}/font_clock.c`);
+execFileSync(process.execPath, ['tools/icons.mjs'], { stdio: 'inherit' });
+cpSync('firmware/ChimmyGoChi/generated/icons.c', `${sketch}/icons.c`);
+cpSync('firmware/ChimmyGoChi/generated/icons.h', `${sketch}/icons.h`);
 for (const f of ['es8311.c', 'es8311.h', 'es8311_reg.h']) {
   if (!existsSync(`.deps/waveshare/${f}`)) throw Error('Run npm run setup first.');
   cpSync(`.deps/waveshare/${f}`, `${sketch}/${f}`);

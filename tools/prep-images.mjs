@@ -1,19 +1,18 @@
 // Normalizes generated character PNGs (any size, white or transparent background) into
-// 256x256 transparent frames with a shared scale and foot line, then writes a pack.json
-// for tools/assets.mjs. Usage: node tools/prep-images.mjs [assets/chimmy]
+// square transparent frames (288px by default) with a shared scale and foot line, then writes
+// a pack.json for tools/assets.mjs. Usage: node tools/prep-images.mjs [assets/chimmy]
 import sharp from 'sharp';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve, join, relative } from 'node:path';
 
 const root = resolve(process.argv[2] || 'assets/chimmy');
 const configPath = join(root, 'chimmy.json');
-const SIZE = 256, HEIGHT = 192, FOOT = 224, CENTER = 128;  // 75% tall, feet at 87.5%
 const actions = ['idle','tap','eat','play','sleep','dress','refuse','happy'];
 mkdirSync(join(root, 'raw'), { recursive: true });
 if (!existsSync(configPath)) {
   writeFileSync(configPath, JSON.stringify({
     reference: 'stand_normal.png',
-    outfits: [{ name: '原本', dir: 'raw' }, { name: '原本', dir: 'raw' }, { name: '原本', dir: 'raw' }],
+    dir: 'raw',
     // mode: "fit" matches the reference height and foot line (expression variants);
     // "canvas" keeps the pose's position/size relative to the generator's canvas (jump, sleep).
     // scale/dx/dy nudge a frame after placement; holes are [x,y] source pixels of enclosed background.
@@ -28,15 +27,33 @@ if (!existsSync(configPath)) {
       refuse: { frames: ['stand_refuse.png','stand_normal.png'], durations: [600,200], loop: false, sound: 'tap' },
       happy: { frames: ['stand_happy.png','cheer.png','stand_happy.png','cheer.png'], durations: [250,300,250,450], loop: false, sound: 'happy' },
     },
+    // Touching the character plays one of these at random (at most 6).
+    taps: [
+      { frames: ['stand_curious.png','stand_normal.png'], durations: [700,200], loop: false, sound: 'tap' },
+      { frames: ['stand_happy.png','cheer.png','stand_happy.png'], durations: [300,400,400], loop: false, sound: 'happy' },
+      { frames: ['wave.png','stand_happy.png','wave.png'], durations: [400,300,500], loop: false, sound: 'happy' },
+      { frames: ['stand_satisfied.png'], durations: [1000], loop: false, sound: 'tap' },
+      { frames: ['stand_refuse.png','stand_happy.png'], durations: [600,400], loop: false, sound: 'tap' },
+      { frames: ['jump.png','stand_happy.png','jump.png','stand_happy.png'], durations: [250,250,250,300], loop: false, sound: 'happy' },
+    ],
+    // Standby screen: walking between spots and sitting on the floor. Left out while the images are missing.
+    walk: { frames: ['walk_a.png','walk_b.png'], durations: [320,320], loop: true, sound: '' },
+    sit: { frames: ['sit_normal.png','sit_blink.png'], durations: [3000,150], loop: true, sound: '' },
+    size: 288,
     placeholder: true,
-    background: '../source/room.png',
+    // 1..3 selectable rooms; any size, cropped to a square and scaled to 480x480.
+    backgrounds: ['../source/room.png', '../source/garden.png', '../source/night.png'],
     sounds: { tap: '../source/tap.wav', happy: '../source/happy.wav', eat: '../source/eat.wav', dress: '../source/dress.wav' },
   }, null, 2));
   console.log(`Created ${configPath}. Put generated PNGs in ${join(root, 'raw')} and run again.`);
   process.exit(0);
 }
 const config = JSON.parse(readFileSync(configPath, 'utf8'));
-if (config.outfits?.length !== 3) throw Error('chimmy.json: exactly three outfits required (they may share a dir)');
+// Standing reference fills ~85% of the frame with the feet 4px above its bottom edge.
+const SIZE = config.size || 288, HEIGHT = Math.round(SIZE * 0.855), FOOT = SIZE - 4, CENTER = SIZE / 2;
+if (SIZE > 288) throw Error('chimmy.json: size must be <= 288 (16 frames must fit in 4MiB)');
+const backgrounds = config.backgrounds || [config.background];
+if (!backgrounds.length || backgrounds.length > 3 || backgrounds.some(b => !b)) throw Error('chimmy.json: 1..3 backgrounds required');
 
 // Flood-fills the background from the image border so white face/hands inside the outline stay.
 function removeBackground(data, w, h, holes = []) {
@@ -82,43 +99,50 @@ async function load(file, holes) {
   return { data, w, h, box: { x0, y0, x1: x1 + 1, y1: y1 + 1 } };
 }
 
-const raws = config.outfits.map(o => resolve(root, o.dir));
-const ref = await load(join(raws[0], config.reference), config.frames?.[config.reference]?.holes);
+const raw = resolve(root, config.dir || 'raw');
+const ref = await load(join(raw, config.reference), config.frames?.[config.reference]?.holes);
 const refScale = HEIGHT / (ref.box.y1 - ref.box.y0);
 const refU = (ref.box.x0 + ref.box.x1) / 2 / ref.w, refV = ref.box.y1 / ref.h;
 
 // Frames: the reference first, then every existing file the clips use (missing ones fall back).
+// Optional clips (tap reactions, walk, sit) are dropped when none of their images exist yet.
 const names = [config.reference], missing = new Set();
-for (const a of actions) {
-  const clip = config.clips?.[a];
-  if (!clip) throw Error(`chimmy.json: clip "${a}" missing`);
-  for (const f of clip.frames) {
+const present = clip => clip.frames.some(f => existsSync(join(raw, f)));
+const taps = (config.taps || []).filter(present), walk = config.walk && present(config.walk) ? config.walk : null;
+const sit = config.sit && present(config.sit) ? config.sit : null;
+if (taps.length > 6) throw Error('chimmy.json: at most 6 tap reactions');
+for (const clip of [...actions.map(a => config.clips?.[a] ?? Error(`chimmy.json: clip "${a}" missing`)), ...taps, walk, sit]) {
+  if (clip instanceof Error) throw clip;
+  for (const f of clip?.frames || []) {
     if (names.includes(f) || missing.has(f)) continue;
-    if (raws.every(dir => existsSync(join(dir, f)))) names.push(f); else missing.add(f);
+    if (existsSync(join(raw, f))) names.push(f); else missing.add(f);
   }
 }
-if (names.length > 12) throw Error(`${names.length} frames used; an outfit atlas holds at most 12: ${names.join(', ')}`);
+if (names.length > 16) throw Error(`${names.length} frames used; the atlas holds at most 16: ${names.join(', ')}`);
 if (missing.size) console.warn(`Not found yet, using ${config.reference} instead: ${[...missing].join(', ')}`);
 
-const outDir = join(root, 'frames'), outfits = [], sheet = [];
+const outDir = join(root, 'frames'), frames = [], sheet = [];
 mkdirSync(outDir, { recursive: true });
-for (let o = 0; o < 3; o++) {
-  const frames = [];
+{
   for (const [index, name] of names.entries()) {
     const opt = config.frames?.[name] || {};
-    const img = await load(join(raws[o], name), opt.holes);
+    const img = await load(join(raw, name), opt.holes);
     const { x0, y0, x1, y1 } = img.box, bw = x1 - x0, bh = y1 - y0;
     const mode = opt.mode || 'fit';
     let s, left, top;
     if (mode === 'fit') {
       s = HEIGHT / bh * (opt.scale || 1);
       left = CENTER - bw * s / 2; top = FOOT - bh * s;
+    } else if (mode === 'width') {
+      // Ear-to-ear width matches the reference: keeps the head size for poses of another height (sitting).
+      s = (ref.box.x1 - ref.box.x0) * refScale / bw * (opt.scale || 1);
+      left = CENTER - bw * s / 2; top = FOOT - bh * s;
     } else if (mode === 'canvas') {
       // Same "camera" as the reference: the generator's canvas maps onto ours identically.
       const k = Math.sqrt(ref.w * ref.h / (img.w * img.h));
       s = refScale * k * (opt.scale || 1);
       left = CENTER + (x0 / img.w - refU) * ref.w * refScale; top = FOOT + (y0 / img.h - refV) * ref.h * refScale;
-    } else throw Error(`${name}: mode must be "fit" or "canvas"`);
+    } else throw Error(`${name}: mode must be "fit", "width" or "canvas"`);
     left = Math.round(left + (opt.dx || 0)); top = Math.round(top + (opt.dy || 0));
     const tw = Math.max(1, Math.round(bw * s)), th = Math.max(1, Math.round(bh * s));
     const scaled = await sharp(img.data, { raw: { width: img.w, height: img.h, channels: 4 } })
@@ -131,27 +155,28 @@ for (let o = 0; o < 3; o++) {
       if (cx < 0 || cy < 0 || cx >= SIZE || cy >= SIZE) { if (scaled[src + 3] > 32) clipped = true; continue; }
       scaled.copy(canvas, (cy * SIZE + cx) * 4, src, src + 4);
     }
-    if (clipped) console.warn(`${config.outfits[o].name}/${name}: cut off at the 256px edge; adjust scale/dx/dy`);
-    const file = `outfit${o}-${String(index).padStart(2, '0')}-${name.replace(/\.png$/i, '')}.png`;
+    if (clipped) console.warn(`${name}: cut off at the ${SIZE}px edge; adjust scale/dx/dy`);
+    const file = `${String(index).padStart(2, '0')}-${name.replace(/\.png$/i, '')}.png`;
     await sharp(canvas, { raw: { width: SIZE, height: SIZE, channels: 4 } }).png().toFile(join(outDir, file));
     frames.push(`frames/${file}`);
-    if (o === 0) sheet.push({ file: join(outDir, file), name });
+    sheet.push({ file: join(outDir, file), name });
   }
-  outfits.push({ name: config.outfits[o].name, frames });
 }
 
-const clips = {};
-for (const a of actions) {
-  const c = config.clips[a];
-  clips[a] = { ...c, frames: c.frames.map(f => names.indexOf(missing.has(f) ? config.reference : f)) };
-}
+const indexed = c => ({ ...c, frames: c.frames.map(f => names.indexOf(missing.has(f) ? config.reference : f)) });
+const clips = Object.fromEntries(actions.map(a => [a, indexed(config.clips[a])]));
+const extra = { taps: taps.map(indexed), ...(walk && { walk: indexed(walk) }), ...(sit && { sit: indexed(sit) }) };
 const rel = p => relative(root, resolve(root, p)).replaceAll('\\', '/');
 // Generated backgrounds are usually 1024px: crop to square and flatten to the firmware's 480x480.
-await sharp(resolve(root, config.background)).resize(480, 480, { fit: 'cover' })
-  .flatten({ background: '#ffffff' }).png().toFile(join(outDir, 'room.png'));
+const rooms = [];
+for (const [i, b] of backgrounds.entries()) {
+  await sharp(resolve(root, b)).resize(480, 480, { fit: 'cover' })
+    .flatten({ background: '#ffffff' }).png().toFile(join(outDir, `room${i}.png`));
+  rooms.push(`frames/room${i}.png`);
+}
 writeFileSync(join(root, 'pack.json'), JSON.stringify({
-  schema: 1, id: config.id || 'chimmy-v1', placeholder: config.placeholder !== false,
-  background: 'frames/room.png', outfits, clips,
+  schema: 2, id: config.id || 'chimmy-v1', placeholder: config.placeholder !== false,
+  frames, backgrounds: rooms, clips, ...extra,
   sounds: Object.fromEntries(Object.entries(config.sounds).map(([k, v]) => [k, rel(v)])),
 }, null, 2));
 
@@ -167,5 +192,5 @@ const grid = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${cols 
   }).join('')}</svg>`);
 await sharp(grid).composite(sheet.map((f, i) => ({ input: f.file,
   left: (i % cols) * cell + 4, top: Math.floor(i / cols) * (cell + 20) + 4 }))).png().toFile(join(root, 'preview.png'));
-console.log(`${names.length} frames x 3 outfits -> ${join(root, 'pack.json')}; check ${join(root, 'preview.png')}`);
+console.log(`${names.length} frames, ${backgrounds.length} backgrounds -> ${join(root, 'pack.json')}; check ${join(root, 'preview.png')}`);
 console.log(`Next: node tools/assets.mjs ${relative(process.cwd(), join(root, 'pack.json'))} assets/pack`);

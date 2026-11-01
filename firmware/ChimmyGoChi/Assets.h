@@ -21,13 +21,16 @@ struct Blob {
   size_t size=0;
   ~Blob(){free(data);}
 };
+constexpr unsigned kMaxBackgrounds=3,kMaxTaps=6;
 struct AssetPack {
-  Blob atlas,background,sounds[4];
-  game::ImageHeader atlasHeader{},backgroundHeader{};
-  Clip clips[8];
-  char names[3][40]{};
+  // Shared so a background change can keep the (multi-MB) character atlas instead of loading a copy.
+  std::shared_ptr<Blob> atlas;
+  Blob background,sounds[4],thumbs[kMaxBackgrounds];
+  game::ImageHeader atlasHeader{},backgroundHeader{},thumbHeaders[kMaxBackgrounds]{};
+  Clip clips[8],taps[kMaxTaps],walk,sit;  // taps: random reactions; walk/sit: optional (count 0)
+  uint8_t tapCount=0;
   bool placeholder=true;
-  uint8_t outfit=0;
+  uint8_t backgroundCount=1,selected=0;  // selected: index of the loaded background
   char root[96]{};
 };
 struct AssetResult {
@@ -38,7 +41,8 @@ struct AssetResult {
 class Assets {
   SPIClass spi{HSPI};
   QueueHandle_t requests=nullptr,results=nullptr;
-  struct Request {char root[96];uint8_t outfit;uint32_t generation;};
+  // reuse: the pack on screen; it stays alive until this request's result is consumed.
+  struct Request {char root[96];uint8_t background;uint32_t generation;const AssetPack *reuse;};
   static void worker(void *);
   bool load(const Request &,AssetResult &);
   bool readBlob(const String &,Blob &,size_t,const char *);
@@ -46,7 +50,7 @@ class Assets {
   SemaphoreHandle_t mutex=nullptr;
   bool ready=false;
   bool begin();
-  bool request(const char *root,uint8_t outfit,uint32_t generation);
+  bool request(const char *root,uint8_t background,uint32_t generation,const AssetPack *reuse=nullptr);
   bool poll(AssetResult &r);
   String activeRoot();
   bool activate(const char *root);

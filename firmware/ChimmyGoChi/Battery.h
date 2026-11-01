@@ -30,8 +30,8 @@ inline const char *stateName(State state) {
 }
 
 inline void format(const Reading &reading,char *buffer,size_t size) {
-  if(reading.state==State::Ready) snprintf(buffer,size,"電量 %d%%",reading.percent);
-  else if(reading.state==State::Disconnected) snprintf(buffer,size,"電量 --");
-  else snprintf(buffer,size,"電量 ERR");
+  if(reading.state==State::Ready) snprintf(buffer,size,"%d%%",reading.percent);
+  else if(reading.state==State::Disconnected) snprintf(buffer,size,"--");
+  else snprintf(buffer,size,"ERR");
 }
 }

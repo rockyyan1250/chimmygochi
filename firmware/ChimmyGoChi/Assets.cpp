@@ -35,9 +35,9 @@ bool Assets::activate(const char *root) {
   const bool ok=p.putString("active",root)==strlen(root);
   p.end();return ok;
 }
-bool Assets::request(const char *root,uint8_t outfit,uint32_t generation) {
-  if(!ready||!root||!*root||strlen(root)>=96||outfit>=3) return false;
-  Request r{};snprintf(r.root,sizeof(r.root),"%s",root);r.outfit=outfit;r.generation=generation;
+bool Assets::request(const char *root,uint8_t background,uint32_t generation,const AssetPack *reuse) {
+  if(!ready||!root||!*root||strlen(root)>=96||background>=kMaxBackgrounds) return false;
+  Request r{};snprintf(r.root,sizeof(r.root),"%s",root);r.background=background;r.generation=generation;r.reuse=reuse;
   return xQueueSend(requests,&r,0)==pdTRUE;
 }
 bool Assets::poll(AssetResult &r) {return ready&&xQueueReceive(results,&r,0)==pdTRUE;}
@@ -79,27 +79,43 @@ bool Assets::load(const Request &r,AssetResult &result) {
   Blob manifest;
   if(!readBlob(String(r.root)+"/manifest.json",manifest,65536,nullptr)) return fail("manifest read failed");
   JsonDocument doc;
-  if(deserializeJson(doc,manifest.data,manifest.size)||doc["schema"]!=1||
-     doc["outfits"].size()!=3) return fail("manifest schema invalid");
-  pack->placeholder=doc["placeholder"]|true;pack->outfit=r.outfit;
+  // Schema 2: one atlas + 1..3 backgrounds with thumbnails. Schema 1 (three outfits, one
+  // background) still loads, using the first outfit.
+  if(deserializeJson(doc,manifest.data,manifest.size)) return fail("manifest JSON invalid");
+  const int schema=doc["schema"]|0;
+  const char *atlasName=schema==2?doc["atlas"].as<const char *>():
+    schema==1?doc["outfits"][0]["atlas"].as<const char *>():nullptr;
+  const size_t backgrounds=schema==2?doc["backgrounds"].size():1;
+  if(!atlasName||!backgrounds||backgrounds>kMaxBackgrounds) return fail("manifest schema invalid");
+  pack->placeholder=doc["placeholder"]|true;
+  pack->backgroundCount=backgrounds;pack->selected=r.background<backgrounds?r.background:0;
   snprintf(pack->root,sizeof(pack->root),"%s",r.root);
-  for(unsigned i=0;i<3;i++) {
-    const char *name=doc["outfits"][i]["name"];
-    if(!name||strlen(name)>=sizeof(pack->names[i])) return fail("outfit name invalid");
-    snprintf(pack->names[i],sizeof(pack->names[i]),"%s",name);
-  }
   auto image=[&](const char *name,Blob &blob,game::ImageHeader &header,uint8_t bpp) {
     if(!game::safeName(name)) return false;
     const char *hash=doc["files"][name]["sha256"];
-    if(!hash||!readBlob(String(r.root)+"/"+name,blob,3*1024*1024+16,hash)||
+    if(!hash||!readBlob(String(r.root)+"/"+name,blob,4*1024*1024+16,hash)||
        doc["files"][name]["bytes"].as<size_t>()!=blob.size) return false;
     return game::imageHeader(blob.data,blob.size,header)&&header.bpp==bpp;
   };
-  if(!image(doc["outfits"][r.outfit]["atlas"],pack->atlas,pack->atlasHeader,3)||
-     pack->atlasHeader.width>320||pack->atlasHeader.height>320) return fail("atlas invalid (max 320px, 12 frames)");
-  if(!image(doc["background"],pack->background,pack->backgroundHeader,2)||
+  // Same pack already on screen (background change): share its verified atlas, so memory never
+  // holds two copies of the largest file.
+  if(r.reuse&&r.reuse->atlas&&strcmp(r.reuse->root,r.root)==0) {
+    pack->atlas=r.reuse->atlas;pack->atlasHeader=r.reuse->atlasHeader;
+  } else {
+    pack->atlas=std::make_shared<Blob>();
+    if(!image(atlasName,*pack->atlas,pack->atlasHeader,3)||
+       pack->atlasHeader.width>320||pack->atlasHeader.height>320) return fail("atlas invalid (max 320px, 16 frames)");
+  }
+  const char *bgName=schema==2?doc["backgrounds"][pack->selected]["image"].as<const char *>():
+    doc["background"].as<const char *>();
+  if(!image(bgName,pack->background,pack->backgroundHeader,2)||
      pack->backgroundHeader.width!=480||pack->backgroundHeader.height!=480||
      pack->backgroundHeader.frames!=1) return fail("background must be 480x480");
+  if(schema==2) for(unsigned i=0;i<backgrounds;i++) {
+    auto &h=pack->thumbHeaders[i];
+    if(!image(doc["backgrounds"][i]["thumb"],pack->thumbs[i],h,2)||h.width>160||h.height>160||h.frames!=1)
+      return fail("background thumbnail invalid (max 160px)");
+  }
   for(unsigned i=0;i<4;i++) {
     const char *name=doc["sounds"][sounds[i]];
     if(!game::safeName(name)) return fail("missing sound slot");
@@ -114,29 +130,41 @@ bool Assets::load(const Request &r,AssetResult &result) {
        u32(4)!=b.size-8||u32(28)!=32000||p[32]!=2||p[33]||
        u32(40)!=b.size-44||((b.size-44)%2)) return fail("sound must be canonical PCM WAV 16k mono");
   }
-  for(unsigned i=0;i<8;i++) {
-    JsonObject c=doc["clips"][actionNames[i]];auto &clip=pack->clips[i];
+  const char *clipError=nullptr;
+  auto parse=[&](JsonObject c,Clip &clip) {
     const size_t count=c["frames"].size();
-    if(!count||count>32||c["durations"].size()!=count) return fail("clip frame count invalid");
+    if(!count||count>32||c["durations"].size()!=count) {clipError="clip frame count invalid";return false;}
     clip.count=count;clip.loop=c["loop"]|false;
     for(unsigned j=0;j<count;j++) {
-      if(!c["frames"][j].is<unsigned>()||!c["durations"][j].is<unsigned>()) return fail("clip types invalid");
+      if(!c["frames"][j].is<unsigned>()||!c["durations"][j].is<unsigned>()) {clipError="clip types invalid";return false;}
       unsigned frame=c["frames"][j],ms=c["durations"][j];
-      if(frame>=pack->atlasHeader.frames||ms<16||ms>5000) return fail("clip frame/time out of bounds");
+      if(frame>=pack->atlasHeader.frames||ms<16||ms>5000) {clipError="clip frame/time out of bounds";return false;}
       clip.frames[j]=frame;clip.durations[j]=ms;
     }
     const char *name=c["sound"]|"";
     for(int j=0;j<4;j++) if(strcmp(name,sounds[j])==0) clip.sound=j;
-    if(*name&&clip.sound<0) return fail("clip sound unknown");
-  }
+    if(*name&&clip.sound<0) {clipError="clip sound unknown";return false;}
+    return true;
+  };
+  for(unsigned i=0;i<8;i++) if(!parse(doc["clips"][actionNames[i]],pack->clips[i])) return fail(clipError);
+  // Optional: random tap reactions, ambient walk and sit.
+  JsonArray taps=doc["taps"];
+  if(taps.size()>kMaxTaps) return fail("at most 6 tap reactions");
+  for(JsonObject t:taps) if(!parse(t,pack->taps[pack->tapCount++])) return fail(clipError);
+  if(doc["walk"].is<JsonObject>()&&!parse(doc["walk"],pack->walk)) return fail(clipError);
+  if(doc["sit"].is<JsonObject>()&&!parse(doc["sit"],pack->sit)) return fail(clipError);
   result.pack=pack.release();return true;
 }
 bool Assets::verifyPack(const char *root,String &error) {
-  for(uint8_t outfit=0;outfit<3;outfit++) {
-    Request r{};snprintf(r.root,sizeof(r.root),"%s",root);r.outfit=outfit;
+  unsigned count=1;
+  std::unique_ptr<AssetPack> first;  // verified atlas, shared by the other backgrounds' checks
+  for(uint8_t background=0;background<count;background++) {
+    Request r{};snprintf(r.root,sizeof(r.root),"%s",root);r.background=background;r.reuse=first.get();
     AssetResult result;
     if(!load(r,result)) {error=result.error;return false;}
-    delete result.pack;
+    count=result.pack->backgroundCount;
+    if(first) delete result.pack;
+    else first.reset(result.pack);
   }
   return true;
 }
@@ -150,7 +178,7 @@ bool PackTransfer::start(const char *name,String &error) {
   active=true;lastActivity=millis();return true;
 }
 bool PackTransfer::open(const char *name,size_t size,const char *hash,String &error) {
-  if(!active||file||!game::safeName(name)||!size||size>3*1024*1024+16||!hash||strlen(hash)!=64) {
+  if(!active||file||!game::safeName(name)||!size||size>4*1024*1024+16||!hash||strlen(hash)!=64) {
     error="invalid file request";return false;}
   for(const char *p=hash;*p;p++) if(!isxdigit(*p)) {error="invalid SHA256";return false;}
   SdGuard lock;path=folder+"/"+name;

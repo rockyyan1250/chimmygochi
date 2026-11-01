@@ -16,7 +16,7 @@ struct State {
   uint32_t bond = 0, remainder = 0, sleepSeconds = 0;
   uint64_t played = 0, generation = 0;
   int64_t savedUtc = 0;
-  uint8_t outfit = 0, brightness = 140, volume = 25;
+  uint8_t background = 0, brightness = 140, volume = 25;
   Mode startMode = Mode::Ambient;
   bool sleeping = false, autoOff = true, hour24 = true, nightMute = true;
   uint8_t offlineHours = 12;
@@ -93,7 +93,7 @@ inline Record encode(const State &s) {
   put(r, 36, s.energy, 2); put(r, 38, s.sleepy, 2);
   put(r, 40, s.bond, 4); put(r, 44, s.remainder, 4);
   put(r, 48, s.sleepSeconds, 4);
-  r[52] = s.outfit; r[53] = s.brightness; r[54] = s.volume;
+  r[52] = s.background; r[53] = s.brightness; r[54] = s.volume;
   r[55] = uint8_t(s.startMode); r[56] = s.sleeping; r[57] = s.autoOff;
   r[58] = s.hour24; r[59] = s.nightMute; r[60] = s.offlineHours;
   put(r, 92, ~crc32(r.data(), 92), 4);
@@ -106,10 +106,10 @@ inline bool decode(const Record &r, State &out) {
   s.generation = get(r, 8, 8); s.savedUtc = get(r, 16, 8); s.played = get(r, 24, 8);
   s.hunger = get(r, 32, 2); s.mood = get(r, 34, 2); s.energy = get(r, 36, 2); s.sleepy = get(r, 38, 2);
   s.bond = get(r, 40, 4); s.remainder = get(r, 44, 4); s.sleepSeconds = get(r, 48, 4);
-  s.outfit = r[52]; s.brightness = r[53]; s.volume = r[54]; s.startMode = Mode(r[55]);
+  s.background = r[52]; s.brightness = r[53]; s.volume = r[54]; s.startMode = Mode(r[55]);
   s.sleeping = r[56]; s.autoOff = r[57]; s.hour24 = r[58]; s.nightMute = r[59]; s.offlineHours = r[60];
   if (s.hunger > 10000 || s.mood > 10000 || s.energy > 10000 || s.sleepy > 10000 ||
-      s.bond > 1000000 || s.remainder >= 60 || s.outfit >= 3 || s.volume > 100 ||
+      s.bond > 1000000 || s.remainder >= 60 || s.background >= 3 || s.volume > 100 ||
       s.brightness < 20 || s.brightness > 220 || r[55] > 2 || r[56] > 1 || r[57] > 1 ||
       r[58] > 1 || r[59] > 1 || s.offlineHours < 1 || s.offlineHours > 24 ||
       (s.savedUtc != 0 && !validUtc(s.savedUtc))) return false;
@@ -130,9 +130,9 @@ inline bool imageHeader(const uint8_t *p, size_t fileSize, ImageHeader &h) {
   auto u16 = [p](size_t o) { return uint16_t(p[o] | uint16_t(p[o+1]) << 8); };
   h.width=u16(4); h.height=u16(6); h.frames=u16(8); h.bpp=p[10];
   if (h.width == 0 || h.height == 0 || h.width > 480 || h.height > 480 ||
-      h.frames == 0 || h.frames > 12 || (h.bpp != 2 && h.bpp != 3)) return false;
+      h.frames == 0 || h.frames > 16 || (h.bpp != 2 && h.bpp != 3)) return false;
   for (size_t i=11; i<16; ++i) if(p[i]) return false;
   h.bytes = size_t(h.width) * h.height * h.frames * h.bpp;
-  return h.bytes <= 3 * 1024 * 1024 && fileSize == h.bytes + 16;
+  return h.bytes <= 4 * 1024 * 1024 && fileSize == h.bytes + 16;
 }
 }  // namespace game
