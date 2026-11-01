@@ -40,6 +40,7 @@ USBポートはESP32-S3（VID 303A）を自動検出します。複数ある・�
 ## 設計資料
 
 - [実装版の説明・現在の制限](docs/operation.md)
+- [画像生成AI用プロンプト集（キャラクター12枚・背景・衣装違い）](docs/asset-prompts.md)
 - [調査結果・根拠・ハードウェアの確認状況](docs/research.md)
 - [暫定技術設計書・開発計画](docs/design.md)
 

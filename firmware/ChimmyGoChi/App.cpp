@@ -147,6 +147,15 @@ static void setAction(int next) {
   stopSound();action=next;actionAt=millis();lastFrame=UINT32_MAX;
   soundFor(next);
 }
+static void drawFrame(uint32_t frame) {
+  if(!pack||!character||frame==lastFrame) return;
+  atlasImage={};atlasImage.header.cf=LV_IMG_CF_TRUE_COLOR_ALPHA;
+  atlasImage.header.w=pack->atlasHeader.width;atlasImage.header.h=pack->atlasHeader.height;
+  atlasImage.data_size=pack->atlasHeader.width*pack->atlasHeader.height*3;
+  atlasImage.data=pack->atlas.data+16+frame*atlasImage.data_size;
+  lv_img_cache_invalidate_src(&atlasImage);lv_img_set_src(character,&atlasImage);
+  lastFrame=frame;frameCount++;
+}
 static void makeScene() {
   if(pack) {
     bgImage={};bgImage.header.cf=LV_IMG_CF_TRUE_COLOR;bgImage.header.w=480;bgImage.header.h=480;
@@ -193,7 +202,9 @@ static void showPage(int next) {
   toast=nullptr;for(auto &p:stats)p=nullptr;
   bubbleGame=false;stopSound();action=pet.sleeping?4:0;actionAt=millis();lastFrame=UINT32_MAX;
   if(page==Game||page==Ambient) {
-    makeScene();header("CHIMMY GOCHI");
+    // Animation pauses while the screen is off; show the resting frame so waking never finds an empty image.
+    makeScene();if(pack)drawFrame(pack->clips[action].frames[0]);
+    header("CHIMMY GOCHI");
     label(screen,(!pack||pack->placeholder)?"示範素材 / 非官方圖片":"BABY CHIMMY",18,64,440,0x68556a);
     if(page==Game) {
       const char *titles[]={"飽足","心情","體力"};
@@ -267,6 +278,11 @@ static void resultMessage(game::Result result) {
   else if(result==game::Result::Tired) notify("需要休息");
   else notify("操作無效");
 }
+// Full or tired: return to the pet and play the refuse clip. A sleeping pet stays asleep.
+static void refuse(game::Result result) {
+  if((result==game::Result::Full||result==game::Result::Tired)&&!pet.sleeping) {showPage(Game);setAction(6);}
+  resultMessage(result);
+}
 static bool canAct() {
   if(saveLocked) {notify("資料損壞：請先復原");return false;}
   if(transfer.active||assetLoading) {notify("載入中");return false;}
@@ -294,16 +310,16 @@ static void control(int id) {
   if(id>=Feed0&&id<Feed0+6) {
     if(!canAct()) return;advanceNow();
     const auto result=game::feed(pet,id-Feed0);
-    if(result!=game::Result::Ok) {resultMessage(result);return;}
+    if(result!=game::Result::Ok) {refuse(result);return;}
     changed();showPage(Game);setAction(2);notify("好開心！");return;
   }
   if(id>=Play0&&id<Play0+2) {
     if(!canAct()) return;
     if(pet.sleeping) {notify("請先起床");return;}
-    if(pet.energy<800) {notify("需要休息");return;}
+    if(pet.energy<800) {refuse(game::Result::Tired);return;}
     if(id==Play0) {
       advanceNow();const auto result=game::play(pet,0);
-      if(result!=game::Result::Ok){resultMessage(result);return;}
+      if(result!=game::Result::Ok){refuse(result);return;}
       changed();showPage(Game);setAction(3);
     } else {
       showPage(Toys);bubbleGame=true;bubbleScore=0;bubbleAt=millis();
@@ -372,7 +388,7 @@ static void control(int id) {
       if(++bubbleScore>=5) {
         advanceNow();const auto result=game::play(pet,1);bubbleGame=false;
         if(result==game::Result::Ok) {changed();showPage(Game);setAction(7);notify("完成！");}
-        else {showPage(Game);resultMessage(result);}
+        else {showPage(Game);refuse(result);}
       } else {
         char score[48];snprintf(score,sizeof(score),"分數 %u / 5",bubbleScore);lv_label_set_text(bubbleLabel,score);
         lv_obj_set_pos(bubble,30+esp_random()%320,145+esp_random()%190);
@@ -396,15 +412,7 @@ static void updateAnimation() {
     if(!c.loop&&delta>=total) {setAction(pet.sleeping?4:0);return;}
     uint32_t phase=delta%total;unsigned index=0;
     while(index+1<c.count&&phase>=c.durations[index]) {phase-=c.durations[index];index++;}
-    const uint32_t frame=c.frames[index];
-    if(frame!=lastFrame) {
-      atlasImage={};atlasImage.header.cf=LV_IMG_CF_TRUE_COLOR_ALPHA;
-      atlasImage.header.w=pack->atlasHeader.width;atlasImage.header.h=pack->atlasHeader.height;
-      atlasImage.data_size=pack->atlasHeader.width*pack->atlasHeader.height*3;
-      atlasImage.data=pack->atlas.data+16+frame*atlasImage.data_size;
-      lv_img_cache_invalidate_src(&atlasImage);lv_img_set_src(character,&atlasImage);
-      lastFrame=frame;frameCount++;
-    }
+    drawFrame(c.frames[index]);
     const int base=page==Game?76:94;
     const int bounce=int(std::sin(delta/220.0)*(action==3||action==7?10:2));
     lv_obj_set_y(character,base+bounce);

@@ -146,9 +146,12 @@ for (const a of actions) {
   clips[a] = { ...c, frames: c.frames.map(f => names.indexOf(missing.has(f) ? config.reference : f)) };
 }
 const rel = p => relative(root, resolve(root, p)).replaceAll('\\', '/');
+// Generated backgrounds are usually 1024px: crop to square and flatten to the firmware's 480x480.
+await sharp(resolve(root, config.background)).resize(480, 480, { fit: 'cover' })
+  .flatten({ background: '#ffffff' }).png().toFile(join(outDir, 'room.png'));
 writeFileSync(join(root, 'pack.json'), JSON.stringify({
   schema: 1, id: config.id || 'chimmy-v1', placeholder: config.placeholder !== false,
-  background: rel(config.background), outfits, clips,
+  background: 'frames/room.png', outfits, clips,
   sounds: Object.fromEntries(Object.entries(config.sounds).map(([k, v]) => [k, rel(v)])),
 }, null, 2));
 
