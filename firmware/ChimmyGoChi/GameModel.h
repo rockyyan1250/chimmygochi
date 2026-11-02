@@ -19,6 +19,10 @@ struct State {
   uint8_t background = 0, brightness = 140, volume = 25;
   Mode startMode = Mode::Ambient;
   bool sleeping = false, autoOff = true, hour24 = true, nightMute = true;
+  bool autoSlept = false;
+  uint8_t favoriteFood = 255;
+  uint8_t outfit = 0;  // worn outfit, index into the pack's outfits
+  bool keepBright = false;  // true: no dimming after 30 idle seconds  // index into the snacks; 255 until first boot picks one  // fell asleep on its own at night; wakes by itself in the morning
   uint8_t offlineHours = 12;
 };
 inline int32_t bounded(int64_t n) { return static_cast<int32_t>(std::max<int64_t>(0, std::min<int64_t>(10000, n))); }
@@ -96,6 +100,7 @@ inline Record encode(const State &s) {
   r[52] = s.background; r[53] = s.brightness; r[54] = s.volume;
   r[55] = uint8_t(s.startMode); r[56] = s.sleeping; r[57] = s.autoOff;
   r[58] = s.hour24; r[59] = s.nightMute; r[60] = s.offlineHours;
+  r[61] = s.autoSlept; r[62] = s.favoriteFood; r[63] = s.keepBright; r[64] = s.outfit;
   put(r, 92, ~crc32(r.data(), 92), 4);
   return r;
 }
@@ -108,10 +113,11 @@ inline bool decode(const Record &r, State &out) {
   s.bond = get(r, 40, 4); s.remainder = get(r, 44, 4); s.sleepSeconds = get(r, 48, 4);
   s.background = r[52]; s.brightness = r[53]; s.volume = r[54]; s.startMode = Mode(r[55]);
   s.sleeping = r[56]; s.autoOff = r[57]; s.hour24 = r[58]; s.nightMute = r[59]; s.offlineHours = r[60];
+  s.autoSlept = r[61]; s.favoriteFood = r[62]; s.keepBright = r[63]; s.outfit = r[64];
   if (s.hunger > 10000 || s.mood > 10000 || s.energy > 10000 || s.sleepy > 10000 ||
-      s.bond > 1000000 || s.remainder >= 60 || s.background >= 8 || s.volume > 100 ||
+      s.bond > 1000000 || s.remainder >= 60 || s.background >= 8 || s.outfit >= 8 || s.volume > 100 ||
       s.brightness < 20 || s.brightness > 220 || r[55] > 2 || r[56] > 1 || r[57] > 1 ||
-      r[58] > 1 || r[59] > 1 || s.offlineHours < 1 || s.offlineHours > 24 ||
+      r[58] > 1 || r[59] > 1 || r[61] > 1 || r[63] > 1 || (r[62] >= kFood.size() && r[62] != 255) || s.offlineHours < 1 || s.offlineHours > 24 ||
       (s.savedUtc != 0 && !validUtc(s.savedUtc))) return false;
   out = s;
   return true;

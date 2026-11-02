@@ -42,7 +42,7 @@ try {
     const state=()=>request('status');
     const initial=await state();
     const restore={0:1,1:2,3:4,4:5,5:6,6:7,7:9}[initial.page];
-    assert(restore&&!initial.bubble_game&&initial.page!==8&&!initial.asset_loading,
+    assert(restore&&initial.game===-1&&initial.page!==8&&!initial.asset_loading,
       'Finish the current game, time edit or asset load before verifying');
     const checkState=s=>{
       assert(['ready','disconnected','unavailable'].includes(s.battery_state),'Battery diagnostics unavailable');
@@ -73,8 +73,7 @@ try {
     const pages=[[1,0,'game'],[2,1,'ambient'],[4,3,'settings'],
       [5,4,'foods'],[6,5,'toys'],[7,6,'rooms'],[9,7,'status'],[59,8,'set-time']];
     const skipped=[];
-    if(!initial.sleeping&&initial.energy>=800&&!initial.save_locked)pages.push([31,5,'bubble']);
-    else skipped.push('bubble: pet must be awake with enough energy and an unlocked save');
+    pages.push([73,12,'games'],[80,13,'catch game']);  // GoGames hub, then 接零食
     let reference=null,referenceText='',last;
     try {
       await request('screen',{on:true});
@@ -82,7 +81,7 @@ try {
         await request('control',{value:id});await wait(300);
         last=await state();checkState(last);
         assert.equal(last.page,page,`${name} page did not open`);
-        if(name==='bubble')assert(last.bubble_game,'Bubble game did not open');
+        if(name==='catch game')assert.equal(last.game,0,'Catch game did not open');
         const image=await captureIndicator();
         const colors=new Set();
         for(let i=0;i<image.length;i+=2)colors.add(image.readUInt16LE(i));
@@ -140,9 +139,8 @@ try {
     assert(beforePlay.energy>=800,'Charge pet energy through sleep before running verify');
     assert.equal((await control(30)).bond,beforePlay.bond+8);
     await control(1);
-    assert((await control(31)).bubble_game);
-    for(let i=0;i<5;i++)await control(67);
-    const played=await state();assert(!played.bubble_game);assert.equal(played.bond,beforePlay.bond+16);
+    assert.equal((await control(80)).game,0,'Catch game did not open');  // touch play itself is manual
+    await control(1);
     const rooms=[...Array(initial.background_count).keys()].filter(i=>i!==initial.background);
     for(const room of [...rooms,initial.background]) {
       await control(1);await control(40+room);

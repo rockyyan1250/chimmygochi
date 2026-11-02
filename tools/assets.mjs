@@ -1,6 +1,6 @@
 import sharp from 'sharp';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { resolve, dirname } from 'node:path';
 
@@ -129,6 +129,17 @@ function save(name,data) {
   manifest.files[name]={bytes:data.length,sha256:createHash('sha256').update(data).digest('hex')};
 }
 await image(frames,'chimmy.cga',3);
+// Outfits: the everyday frames plus up to 7 more sets in the same order; the picker shows frame 0.
+const outfits=input.schema===2&&input.outfits?.length?input.outfits:[{name:'平時',frames}];
+if(outfits.length>8||outfits.some(o=>!o.name||!Array.isArray(o.frames)||o.frames.length!==frames.length))
+  throw Error('"outfits": at most 8, each with a name and as many frames as "frames"');
+manifest.outfits=[];
+for(const [i,o] of outfits.entries()) {
+  const atlas=i?`outfit${i}.cga`:'chimmy.cga';
+  if(i) await image(o.frames,atlas,3);
+  await image([o.frames[0]],`othumb${i}.cga`,3,96);
+  manifest.outfits.push({name:o.name,atlas,thumb:`othumb${i}.cga`});
+}
 for(const [i,b] of backgrounds.entries()) {
   await image([b],`room${i}.cga`,2);
   await image([b],`thumb${i}.cga`,2,96);
@@ -149,6 +160,15 @@ if(input.taps) {
   manifest.taps=input.taps.map((c,i)=>checkClip(c,`taps[${i}]`));
 }
 for(const a of ['walk','sit']) if(input[a]) manifest[a]=checkClip(input[a],a);
+// Optional gestures the behavior engine picks from (firmware Behavior.h names).
+const gestureNames=['look','smile','content','wave','stretch','hop','doze','ball'];
+if(input.gestures) {
+  for(const [name,clip] of Object.entries(input.gestures)) {
+    if(!gestureNames.includes(name)) throw Error(`Unknown gesture "${name}" (use ${gestureNames.join(', ')})`);
+    checkClip(clip,`gestures.${name}`);
+  }
+  manifest.gestures=input.gestures;
+}
 if(!input.sounds||['tap','happy','eat','dress'].some(id=>!input.sounds[id]))
   throw Error('All four sound slots are required');
 for(const [id,file] of Object.entries(input.sounds)) {
@@ -173,7 +193,9 @@ if(!existsSync('.deps/fonts/NotoSansHK-Regular.otf')) {
 if(!existsSync('.deps/fonts/OFL.txt')) execFileSync('curl',['-fL','-o','.deps/fonts/OFL.txt',
   'https://raw.githubusercontent.com/notofonts/noto-cjk/Sans2.004/LICENSE'],{stdio:'inherit'});
 const text=readFileSync('firmware/ChimmyGoChi/UiText.h','utf8')+
-  readFileSync('firmware/ChimmyGoChi/App.cpp','utf8')+JSON.stringify(input)+
+  // Every on-screen string lives in the firmware sources (App, Games, ...).
+  readdirSync('firmware/ChimmyGoChi').filter(f=>f.endsWith('.cpp')).map(f=>readFileSync(`firmware/ChimmyGoChi/${f}`,'utf8')).join('')+
+  JSON.stringify(input)+
   readFileSync('firmware/kmb_chars.txt','utf8')+  // bus stop names (tools/kmb-chars.mjs)
   '一二三四五六日年月星期上午下午零0123456789:-/%';
 execFileSync(process.execPath,['node_modules/lv_font_conv/lv_font_conv.js','--font','.deps/fonts/NotoSansHK-Regular.otf',

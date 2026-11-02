@@ -12,6 +12,7 @@
 #include "Kmb.h"
 #include "Net.h"
 #include "Bus.h"
+#include "Games.h"
 #include <WebServer.h>
 
 LV_FONT_DECLARE(font_tc);
@@ -25,15 +26,23 @@ static uint32_t actionAt=0,toastUntil=0,frameCount=0,maxLoopUs=0;
 static std::unique_ptr<AssetPack> pack;
 static PackTransfer transfer;
 static lv_obj_t *screen=nullptr,*character=nullptr,*background=nullptr,*toast=nullptr;
-static lv_obj_t *clockLabel=nullptr,*dateLabel=nullptr,*infoLabel=nullptr,*stats[3]{},*settingsPanel=nullptr;
+static lv_obj_t *bondLabel=nullptr,*clockLabel=nullptr,*dateLabel=nullptr,*infoLabel=nullptr,*stats[3]{},*settingsPanel=nullptr;
 // Bus screen: per line the stop, direction and next-bus labels.
 static lv_obj_t *busStop[bus::kLines]{},*busDest[bus::kLines]{},*busEta[bus::kLines]{};
 static uint32_t busRevision=0,busFetchAt=0,busMapAt=0;
 static int busBoard[bus::kLines]={-1,-1};  // line -> board index in the last batch
+static lv_obj_t *sheet=nullptr,*foodSprite=nullptr;  // care menu over the room; snack being eaten
+// Viewing mode (room): every control hidden, CHIMMY larger; any touch brings the room back.
+constexpr int kViewZoom=300;
+static bool viewing=false;
+static lv_obj_t *viewPad=nullptr,*viewHidden[48]{};
+static unsigned viewHiddenCount=0;
+static int queuedAction=-1;  // plays when the current one-shot clip ends (e.g. joy after a favourite)
 static lv_obj_t *wifiIcon=nullptr,*batteryBox=nullptr,*batteryLabel=nullptr,*batteryFill=nullptr,*powerIcon=nullptr;
 static battery::Reading batteryReading{battery::State::Unavailable,-1};
 static bool batterySampled=false,usbPower=false,charging=false;
-static lv_img_dsc_t thumbImages[kMaxBackgrounds]{};
+static lv_img_dsc_t thumbImages[kMaxBackgrounds]{},outfitImages[kMaxOutfits]{};
+static bool dressAfterLoad=false;  // play the dress-up clip once the new outfit has loaded
 static uint32_t batteryReadAt=0;
 static lv_obj_t *fallback=nullptr,*eyes[2]{},*fallbackBody=nullptr;
 static lv_img_dsc_t atlasImage{},bgImage{};
@@ -42,28 +51,27 @@ static char toastMessage[200]{};
 static tm timeEdit{};
 static lv_obj_t *timeFields[5]{};
 static int editField=0;
-static bool bubbleGame=false;
-static unsigned bubbleScore=0;
-static lv_obj_t *bubble=nullptr,*bubbleLabel=nullptr;
-static uint32_t bubbleAt=0;
+static games::Id playing=games::Catch;  // the mini game on the Play page
 static uint32_t audioFailureSeen=0;
 static bool urgentSave=false,capture=false;
 static uint32_t captureAt=0;
 // Actions 0..7 are the pack's named clips; these index its optional clips.
-constexpr int ActTap0=8,ActWalk=ActTap0+int(kMaxTaps),ActSit=ActWalk+1;
+constexpr int ActTap0=8,ActWalk=ActTap0+int(kMaxTaps),ActSit=ActWalk+1,ActGesture0=ActSit+1;
 // Standby screen: the pet rests, walks to a random spot, sometimes sits, and repeats.
-enum class Wander : uint8_t { Rest, Walk, Sit };
-static Wander wander=Wander::Rest;
+// The pet's own life (Behavior.h): the step being played and where a walk is heading.
+static behavior::Engine engine(1);
+static behavior::Step step;
+static bool stepInterrupted=false;
 static float wanderX=0,wanderY=0,targetX=0,targetY=0;
-static uint32_t wanderUntil=0,lastWanderMs=0;
+static uint32_t stepAt=0,lastWanderMs=0;
 static int lastTap=-1;
 
 // Page 2 and control 3 belonged to the removed clock mode; the numbers stay for the USB test tools.
-enum Page { Game=0,Ambient=1,Settings=3,Foods=4,Toys=5,Rooms=6,Status=7,SetTime=8,WifiSetup=9,Bus=10,BusSetup=11 };
-enum Control { GoGame=1,GoAmbient,GoSettings=4,GoFoods,GoToys,GoRooms,Sleep,
+enum Page { Game=0,Ambient=1,Clock=2,Settings=3,Foods=4,Toys=5,Rooms=6,Status=7,SetTime=8,WifiSetup=9,Bus=10,BusSetup=11,GamesHub=12,Play=13,Outfits=14 };
+enum Control { GoGame=1,GoAmbient,GoClock,GoSettings,GoFoods,GoToys,GoRooms,Sleep,
   GoStatus,Back,Tap,Feed0=20,Play0=30,Room0=40,BrightnessDown=50,BrightnessUp,VolumeDown,VolumeUp,
   AutoOff,Hour24,NightMute,StartMode,OfflineCap,EditTime,TimePrev,TimeNext,TimeMinus,TimePlus,TimeSave,
-  Reload,Sync,Bubble,ResetConfirm,ResetYes,GoBus=70,GoBusSetup };
+  Reload,Sync,ResetConfirm=68,ResetYes,GoBus=70,GoBusSetup,ToggleSheet,GoGames,AutoDim,ViewMode,GoOutfits,PlayGame0=80,Outfit0=90 };
 static void showPage(int next);
 static void notify(const char *message,uint32_t duration=4000);
 static void setAction(int next);
@@ -170,7 +178,7 @@ static void requestAssets() {
   if(assetLoading||transfer.active) return;
   const String root=assets.activeRoot();
   if(!assets.ready||root.isEmpty()) {notify("示範素材：使用內建圖形，請由USB安裝素材",8000);return;}
-  assetLoading=assets.request(root.c_str(),pet.background,++sceneGeneration,pack.get());
+  assetLoading=assets.request(root.c_str(),pet.background,pet.outfit,++sceneGeneration,pack.get());
   if(!assetLoading) notify("素材載入失敗");
 }
 static bool muteNow() {
@@ -182,10 +190,12 @@ static bool muteNow() {
 }
 static const Clip &clipFor(int a) {
   if(a>=ActTap0&&a<ActWalk) return pack->taps[a-ActTap0];
+  if(a>=ActGesture0&&a<ActGesture0+int(behavior::kGestures)) return pack->gestures[a-ActGesture0];
   return a==ActWalk?pack->walk:a==ActSit?pack->sit:pack->clips[a];
 }
 // Idle, sleep, walk and sit are resting states: new actions may interrupt them.
-static bool resting(int a) {return a==0||a==4||a==ActWalk||a==ActSit;}
+// Idle, sleep and the pet's own acts (walk, sit, gestures): a touch or care act may cut in.
+static bool resting(int a) {return a==0||a==4||a==ActWalk||a==ActSit||(a>=ActGesture0&&a<ActGesture0+int(behavior::kGestures));}
 static void soundFor(int next) {
   if(muteNow()||!pack) return;
   const int sound=clipFor(next).sound;
@@ -209,34 +219,52 @@ static void drawFrame(uint32_t frame) {
 // a floor band whose lowest feet line (y~380) stays above the clock.
 static int charSize() {return pack?pack->atlasHeader.width:256;}
 static int gameY() {return 356-charSize();}
-static int busZoom=154;  // 256 = 100%; bus page CHIMMY, sized to the floor left under the cards
-static int busTop(int feetY) {const int h=charSize()/2;return feetY-h-(charSize()-4-h)*busZoom/256;}
+static int charZoom=154;  // 256 = 100%; bus page CHIMMY, sized to the floor left under the cards
+static int zoomTop(int feetY) {const int h=charSize()/2;return feetY-h-(charSize()-4-h)*charZoom/256;}
 static int restX() {return (480-charSize())/2;}
 static int restY() {return 352-charSize()+16;}
-static int homeY() {return page==Game?gameY():page==Bus?busTop(468):restY();}
+static int homeY() {return viewing?zoomTop(440):page==Game?gameY():page==Bus?zoomTop(468):restY();}
 // Floor band per page: on the game page the feet stay above the stat chips (y~356).
-static int wanderMinY() {return page==Game?gameY()-28:page==Bus?busTop(460):restY()-40;}  // head stays below the cards
-static int wanderMaxY() {return page==Game?gameY():page==Bus?busTop(468):restY()-8;}  // standby: feet above the date
+static int wanderMinY() {return viewing?zoomTop(410):page==Game?gameY()-28:page==Bus?zoomTop(460):std::max(restY()-40,62);}  // head below the cards / status strip
+static int wanderMaxY() {return viewing?zoomTop(452):page==Game?gameY():page==Bus?zoomTop(468):restY()-8;}  // standby: feet above the date
+static int localHour() {
+  const int64_t t=nowUtc();if(!t) return -1;
+  time_t e=t;tm l{};localtime_r(&e,&l);return l.tm_hour;
+}
 static void resetWander() {
-  wander=Wander::Rest;wanderUntil=millis()+2500;lastWanderMs=millis();
+  step=behavior::Step{};step.ms=2500;stepAt=lastWanderMs=millis();stepInterrupted=false;
   wanderX=targetX=restX();wanderY=targetY=homeY();
 }
-static void wanderTick() {
-  const uint32_t now=millis();
-  const float dt=std::min<uint32_t>(now-lastWanderMs,200)/1000.0f;lastWanderMs=now;
-  if(!resting(action)||pet.sleeping) return;  // a tap reaction pauses the walk
-  if(wander==Wander::Walk) {
-    if(pack->walk.count&&action!=ActWalk) setAction(ActWalk);
-    const float dx=targetX-wanderX,dy=targetY-wanderY,dist=std::sqrt(dx*dx+dy*dy),step=28*dt;
-    if(dist>step) {wanderX+=dx/dist*step;wanderY+=dy/dist*step;return;}
-    wanderX=targetX;wanderY=targetY;
-    if(pack->sit.count&&esp_random()%2) {wander=Wander::Sit;wanderUntil=now+6000+esp_random()%6000;setAction(ActSit);}
-    else {wander=Wander::Rest;wanderUntil=now+3000+esp_random()%4000;setAction(0);}
-  } else if(elapsed(wanderUntil)) {
+static void sleepNow(bool own) {
+  advanceNow();pet.sleeping=true;pet.autoSlept=own;pet.sleepSeconds=0;changed();
+  if(page==Game||page==Ambient||page==Bus) showPage(page);  // moon/sun button and sleeping pose
+}
+static void wakeNow() {
+  advanceNow();pet.sleeping=false;pet.autoSlept=false;pet.sleepSeconds=0;changed();
+  engine.woke(millis());
+  if(page==Game||page==Ambient||page==Bus) showPage(page);
+}
+// Night sleep must not depend on the animation (it stops while the screen is off):
+// checked every second from loop(). With the screen on, the engine dozes first instead.
+static void sleepTick() {
+  const int hour=localHour();if(hour<0) return;
+  if(pet.sleeping) {if(pet.autoSlept&&!behavior::night(hour)) wakeNow();return;}
+  const bool engineSees=displayOn&&(page==Game||page==Ambient||page==Bus)&&pack;
+  if(!engineSees&&behavior::night(hour)&&millis()-lastInput>=behavior::kSleepIdleMs) sleepNow(true);
+}
+static void startStep(uint32_t now) {
+  using behavior::Kind;
+  switch(step.kind) {
+    case Kind::Rest: if(action!=0) setAction(0);break;
+    case Kind::Sit: setAction(pack->sit.count?ActSit:0);break;
+    case Kind::Gesture: setAction(ActGesture0+step.gesture);break;
+    case Kind::Sleep: sleepNow(true);break;
+    case Kind::Walk: {
     // The frame's transparent margin may leave the screen; the body stays inside. Each walk
     // covers at least 120px, turning back when the far side is too close.
     // Bus page: the smaller body may go further out but stays clear of the rounded corners.
-    const int edge=page==Bus?30+(256-busZoom)/10:30,minX=-edge,maxX=480-charSize()+edge,minY=wanderMinY(),maxY=wanderMaxY();
+    const int zoomNow=page==Bus||viewing?charZoom:256,body=110*zoomNow/256,half=charSize()/2;
+    const int minX=20+body-half,maxX=460-body-half,minY=wanderMinY(),maxY=wanderMaxY();
     // int() keeps the negative minX out of unsigned arithmetic with esp_random().
     auto random=[](int n){return int(esp_random()%unsigned(n));};
     targetX=minX+random(maxX-minX+1);
@@ -246,8 +274,39 @@ static void wanderTick() {
     }
     targetX=std::max<float>(minX,std::min<float>(maxX,targetX));
     targetY=minY+random(maxY-minY+1);
-    wander=Wander::Walk;if(action!=0&&!pack->walk.count) setAction(0);
-  } else if(wander==Wander::Sit&&action!=ActSit) setAction(ActSit);
+    setAction(pack->walk.count?ActWalk:0);
+    break;
+    }
+  }
+  stepAt=now;
+}
+// Plays the current step and asks the engine for the next one when it ends.
+static void wanderTick() {
+  using behavior::Kind;
+  const uint32_t now=millis();
+  const float dt=std::min<uint32_t>(now-lastWanderMs,200)/1000.0f;lastWanderMs=now;
+  if(pet.sleeping) return;
+  if(!resting(action)) {stepInterrupted=true;return;}  // a touch or care act is playing
+  if(sheet) {if(action!=0) setAction(0);stepInterrupted=true;return;}  // menu open: stand and wait
+  bool done=stepInterrupted;
+  if(!done) switch(step.kind) {
+    case Kind::Walk: {
+      const float dx=targetX-wanderX,dy=targetY-wanderY,dist=std::sqrt(dx*dx+dy*dy),move=28*dt;
+      if(dist>move) {wanderX+=dx/dist*move;wanderY+=dy/dist*move;}
+      else {wanderX=targetX;wanderY=targetY;done=true;}
+      break;
+    }
+    // A one-shot clip hands back to idle (action 0) when it ends; looping ones (doze) run for step.ms.
+    case Kind::Gesture: done=action==0||(step.ms&&now-stepAt>=step.ms);break;
+    default: done=now-stepAt>=step.ms;break;
+  }
+  if(!done) return;
+  if(stepInterrupted) {engine.interrupt();stepInterrupted=false;}
+  behavior::Context c;
+  c.now=now;c.hour=localHour();c.idleMs=now-lastInput;c.bond=pet.bond;c.calm=page==Bus;
+  c.hasSit=pack->sit.count>0;c.available=pack->gestureMask;c.asleep=pet.sleeping;
+  step=engine.next(c);
+  startStep(now);
 }
 static void makeScene() {
   if(pack) {
@@ -281,49 +340,66 @@ static void clockBackdrop(lv_obj_t *l) {
 static void topRow(bool home) {
   if(home) {
     iconButton(screen,pet.sleeping?&icon_wake:&icon_sleep,70,12,48,48,Sleep,0xede7fb);
-    iconButton(screen,&icon_nav_settings,362,12,48,48,GoSettings,0xf3f0ea);
+    iconButton(screen,&icon_nav_settings,400,12,48,48,GoSettings,0xf3f0ea);
   } else iconButton(screen,&icon_back,70,12,48,48,Back,0xede7fb);
 }
-static void switchRow(lv_obj_t *panel,int y,const lv_img_dsc_t *icon,bool on,int id) {
-  auto img=lv_img_create(panel);lv_img_set_src(img,icon);lv_obj_set_pos(img,22,y+15);
-  auto sw=lv_switch_create(panel);lv_obj_set_pos(sw,300,y+14);lv_obj_set_size(sw,84,38);
+// Settings row: icon, a short Cantonese name, then the control on the right (from x=236).
+static void settingRow(lv_obj_t *panel,int y,const lv_img_dsc_t *icon,const char *name) {
+  auto img=lv_img_create(panel);lv_img_set_src(img,icon);lv_obj_set_pos(img,18,y+15);
+  label(panel,name,62,y+14,170);
+}
+static void switchRow(lv_obj_t *panel,int y,const lv_img_dsc_t *icon,const char *name,bool on,int id) {
+  settingRow(panel,y,icon,name);
+  auto sw=lv_switch_create(panel);lv_obj_set_pos(sw,316,y+14);lv_obj_set_size(sw,84,38);
   if(on)lv_obj_add_state(sw,LV_STATE_CHECKED);
   lv_obj_set_style_bg_color(sw,color(0x7fd3b8),LV_PART_INDICATOR|LV_STATE_CHECKED);
   lv_obj_add_event_cb(sw,event,LV_EVENT_CLICKED,reinterpret_cast<void *>(static_cast<intptr_t>(id)));
 }
+static void gameSound(int slot) {
+  if(muteNow()||!pack||slot<0||slot>3) return;
+  playSound(pack->sounds[slot].data,pack->sounds[slot].size,pet.volume);
+}
+// Playing together: up to +10 affection and a lift in mood per finished game.
+static void gameReward(unsigned score) {
+  advanceNow();const unsigned n=std::min(score,10u);
+  pet.bond=std::min<uint32_t>(1000000,pet.bond+n);pet.mood=game::bounded(pet.mood+int(n)*150);changed();
+}
 static void showPage(int next) {
+  if(next==Game) next=Ambient;
+  if(page==Play) games::stop();  // its objects go with the old screen  // v0.3: no gauge page; the room is home and care opens over it
   if(page==WifiSetup&&next!=WifiSetup) net::stopPortal();  // the setup AP lives only on its page
+  if(viewing) {viewing=false;viewPad=nullptr;viewHiddenCount=0;lv_obj_clear_flag(lv_layer_top(),LV_OBJ_FLAG_HIDDEN);}
   const lv_coord_t keepScroll=page==Settings&&next==Settings&&settingsPanel?lv_obj_get_scroll_y(settingsPanel):0;
   auto oldScreen=screen;
   screen=lv_obj_create(nullptr);
   lv_obj_clear_flag(screen,LV_OBJ_FLAG_SCROLLABLE);lv_obj_set_style_bg_color(screen,color(0xf3efe8),0);
   lv_scr_load(screen);
   if(oldScreen)lv_obj_del(oldScreen);
-  page=next;character=background=fallback=fallbackBody=clockLabel=dateLabel=infoLabel=bubble=bubbleLabel=settingsPanel=nullptr;
+  page=next;character=background=fallback=fallbackBody=bondLabel=clockLabel=dateLabel=infoLabel=settingsPanel=nullptr;
   for(unsigned i=0;i<bus::kLines;i++) busStop[i]=busDest[i]=busEta[i]=nullptr;
-  toast=nullptr;for(auto &p:stats)p=nullptr;
-  bubbleGame=false;stopSound();action=pet.sleeping?4:0;actionAt=millis();lastFrame=UINT32_MAX;
+  toast=sheet=foodSprite=nullptr;queuedAction=-1;for(auto &p:stats)p=nullptr;
+  stopSound();action=pet.sleeping?4:0;actionAt=millis();lastFrame=UINT32_MAX;
   if(page==Game||page==Ambient) {
     // Animation pauses while the screen is off; show the resting frame so waking never finds an empty image.
     resetWander();
     makeScene();if(pack)drawFrame(clipFor(action).frames[0]);
     topRow(true);
-    if(page==Game) {
+    iconButton(screen,&icon_view,344,12,48,48,ViewMode,0xf3f0ea);
+    {
+      auto strip=box(screen,128,66,224,32,0xfffaf3,LV_RADIUS_CIRCLE);lv_obj_set_style_bg_opa(strip,LV_OPA_80,0);
       const lv_img_dsc_t *icons[]={&icon_stat_food,&icon_stat_mood,&icon_stat_energy};
       const uint32_t tint[]={0xffb347,0xff7a93,0xffd23f};
       for(int i=0;i<3;i++) {
-        auto chip=box(screen,74+i*114,360,104,26,0xfffaf3,LV_RADIUS_CIRCLE);lv_obj_set_style_bg_opa(chip,LV_OPA_80,0);
-        auto img=lv_img_create(chip);lv_img_set_src(img,icons[i]);lv_obj_set_pos(img,6,3);
-        stats[i]=lv_bar_create(chip);lv_obj_set_pos(stats[i],32,8);lv_obj_set_size(stats[i],62,10);
+        auto img=lv_img_create(strip);lv_img_set_src(img,icons[i]);lv_obj_set_pos(img,8+i*54,6);
+        stats[i]=lv_bar_create(strip);lv_obj_set_pos(stats[i],30+i*54,12);lv_obj_set_size(stats[i],24,8);
         lv_bar_set_range(stats[i],0,100);lv_obj_clear_flag(stats[i],LV_OBJ_FLAG_CLICKABLE);
         lv_obj_set_style_bg_color(stats[i],color(0xe9e2d6),LV_PART_MAIN);
         lv_obj_set_style_bg_color(stats[i],color(tint[i]),LV_PART_INDICATOR);
       }
-      const lv_img_dsc_t *icons2[]={&icon_act_feed,&icon_act_play,&icon_act_room,&icon_nav_home};
-      const int ids[]={GoFoods,GoToys,GoRooms,GoAmbient};
-      const uint32_t tints[]={0xffe2bd,0xc0e5e2,0xded6f5,0xf7f3ed};
-      for(int i=0;i<4;i++) iconButton(screen,icons2[i],74+i*84,396,76,52,ids[i],tints[i]);
-    } else {
+      auto paw=lv_img_create(strip);lv_img_set_src(paw,&icon_stat_bond);lv_obj_set_pos(paw,170,6);
+      bondLabel=label(strip,"0",192,0,32,0x594761);
+    }
+    {
       dateLabel=label(screen,"",120,360,240,0x594761);clockBackdrop(dateLabel);
       lv_obj_set_style_text_align(dateLabel,LV_TEXT_ALIGN_CENTER,0);
       clockLabel=label(screen,"--:--",150,400,180);clockBackdrop(clockLabel);
@@ -332,7 +408,7 @@ static void showPage(int next) {
       lv_obj_set_style_text_font(clockLabel,&lv_font_montserrat_48,0);
       lv_obj_set_style_text_align(clockLabel,LV_TEXT_ALIGN_CENTER,0);
       iconButton(screen,&icon_nav_bus,70,rowY,64,52,GoBus,0xf7f3ed);
-      iconButton(screen,&icon_nav_game,346,rowY,64,52,GoGame,0xf7f3ed);
+      iconButton(screen,&icon_nav_heart,346,rowY,64,52,ToggleSheet,0xffe3ea);
     }
   } else if(page==Bus) {
     // Next buses for the configured lines (or one hint card), the time and date, and CHIMMY
@@ -342,16 +418,16 @@ static void showPage(int next) {
     const unsigned cards=shown?shown:1;
     const int cardsBottom=146+int(cards)*92-4;
     // Standing height ~0.855 of the frame; head clears the cards with feet at y=460.
-    busZoom=std::min(256,(460-cardsBottom-6)*256*100/(charSize()*855/10));
+    charZoom=std::min(256,(460-cardsBottom-6)*256*100/(charSize()*855/10));
     resetWander();
     makeScene();
     if(character) {
-      if(busZoom<256) lv_img_set_zoom(character,busZoom);
+      if(charZoom<256) lv_img_set_zoom(character,charZoom);
       lv_obj_set_pos(character,restX(),homeY());
       drawFrame(clipFor(action).frames[0]);
     }
     iconButton(screen,&icon_back,70,12,48,48,Back,0xede7fb);
-    iconButton(screen,&icon_nav_settings,362,12,48,48,GoBusSetup,0xf3f0ea);
+    iconButton(screen,&icon_nav_settings,400,12,48,48,GoBusSetup,0xf3f0ea);
     auto pill=box(screen,140,62,200,80,0xfffaf3,28);lv_obj_set_style_bg_opa(pill,LV_OPA_80,0);
     clockLabel=label(pill,"--:--",0,-4,200);
     lv_obj_set_style_text_font(clockLabel,&lv_font_montserrat_48,0);lv_obj_set_style_text_align(clockLabel,LV_TEXT_ALIGN_CENTER,0);
@@ -371,6 +447,59 @@ static void showPage(int next) {
       else lv_label_set_text(busDest[i],"撳右上角設定");
     }
     busRevision=0;  // fetch at once
+  } else if(page==GamesHub) {
+    // Four mini games as cards, each with its best score.
+    iconButton(screen,&icon_back,70,12,48,48,GoAmbient,0xede7fb);
+    auto title=label(screen,"小遊戲",90,70,300);lv_obj_set_style_text_align(title,LV_TEXT_ALIGN_CENTER,0);
+    const lv_img_dsc_t *icons[]={&icon_g_card0,&icon_g_card1,&icon_g_card2,&icon_g_card3};
+    const uint32_t tints[]={0xffe8cc,0xc0e5e2,0xffd6e0,0xfff1b8};
+    for(unsigned i=0;i<games::kGames;i++) {
+      auto b=lv_btn_create(screen);lv_obj_set_pos(b,54+(i%2)*192,112+(i/2)*172);lv_obj_set_size(b,180,160);
+      lv_obj_set_style_radius(b,28,0);lv_obj_set_style_bg_color(b,color(tints[i]),0);
+      lv_obj_set_style_shadow_width(b,0,0);lv_obj_set_style_pad_all(b,0,0);
+      lv_obj_add_event_cb(b,event,LV_EVENT_CLICKED,reinterpret_cast<void *>(static_cast<intptr_t>(PlayGame0+i)));
+      auto img=lv_img_create(b);lv_img_set_src(img,icons[i]);lv_obj_align(img,LV_ALIGN_TOP_MID,0,14);
+      auto name=label(b,games::names[i],0,84,180);lv_obj_set_style_text_align(name,LV_TEXT_ALIGN_CENTER,0);
+      char best[24];snprintf(best,sizeof(best),"最高 %u",games::best(games::Id(i)));
+      auto bl=label(b,best,0,116,180,0x7a6e7f);lv_obj_set_style_text_align(bl,LV_TEXT_ALIGN_CENTER,0);
+    }
+  } else if(page==Outfits) {
+    // Wardrobe: one card per outfit with its picture; the worn one has a pink frame.
+    iconButton(screen,&icon_back,70,12,48,48,GoAmbient,0xede7fb);
+    auto title=label(screen,"換衫",90,70,300);lv_obj_set_style_text_align(title,LV_TEXT_ALIGN_CENTER,0);
+    const unsigned count=pack?pack->outfitCount:0;
+    if(!count) {
+      infoLabel=label(screen,"示範素材：請先由USB安裝素材",60,220,360);
+      lv_obj_set_style_text_align(infoLabel,LV_TEXT_ALIGN_CENTER,0);
+    }
+    auto panel=lv_obj_create(screen);lv_obj_set_pos(panel,40,112);lv_obj_set_size(panel,400,354);
+    lv_obj_set_style_pad_all(panel,0,0);lv_obj_set_style_border_width(panel,0,0);lv_obj_set_style_bg_opa(panel,LV_OPA_TRANSP,0);
+    lv_obj_set_scrollbar_mode(panel,LV_SCROLLBAR_MODE_OFF);
+    for(unsigned i=0;i<count;i++) {
+      const bool worn=i==pack->outfit;
+      auto b=lv_btn_create(panel);lv_obj_set_pos(b,(i%2)*208,(i/2)*172);lv_obj_set_size(b,192,160);
+      lv_obj_set_style_radius(b,28,0);lv_obj_set_style_bg_color(b,color(worn?0xffe3ea:0xfff1d6),0);
+      lv_obj_set_style_shadow_width(b,0,0);lv_obj_set_style_pad_all(b,0,0);
+      lv_obj_set_style_border_width(b,worn?4:0,0);lv_obj_set_style_border_color(b,color(0xff8fab),0);
+      lv_obj_add_event_cb(b,event,LV_EVENT_CLICKED,reinterpret_cast<void *>(static_cast<intptr_t>(Outfit0+i)));
+      if(pack->outfitThumbs[i].data) {
+        auto &t=outfitImages[i];t={};t.header.cf=LV_IMG_CF_TRUE_COLOR_ALPHA;
+        t.header.w=pack->outfitThumbHeaders[i].width;t.header.h=pack->outfitThumbHeaders[i].height;
+        t.data_size=t.header.w*t.header.h*3;t.data=pack->outfitThumbs[i].data+16;
+        auto img=lv_img_create(b);lv_img_set_src(img,&t);lv_obj_align(img,LV_ALIGN_TOP_MID,0,10);
+      }
+      auto name=label(b,pack->outfitNames[i],0,0,180);lv_obj_set_style_text_align(name,LV_TEXT_ALIGN_CENTER,0);
+      lv_obj_align(name,LV_ALIGN_BOTTOM_MID,0,-12);  // same spot with or without the worn frame
+    }
+    if(count==1) {  // only the everyday clothes so far
+      auto soon=box(panel,208,0,192,160,0xf3efe8,28);
+      auto l=label(soon,"新衫\n即將登場",0,50,192,0x9a8f9f);lv_obj_set_style_text_align(l,LV_TEXT_ALIGN_CENTER,0);
+    }
+  } else if(page==Play) {
+    games::Host h;
+    h.screen=screen;h.pack=pack.get();h.font=&font_tc;h.sound=gameSound;h.reward=gameReward;
+    h.restart=[]{showPage(Play);};h.exit=[]{showPage(GamesHub);};
+    games::start(playing,h);
   } else if(page==BusSetup) {
     iconButton(screen,&icon_back,70,12,48,48,Back,0xede7fb);
     auto title=label(screen,"巴士路線設定",90,72,300);lv_obj_set_style_text_align(title,LV_TEXT_ALIGN_CENTER,0);
@@ -421,25 +550,30 @@ static void showPage(int next) {
     lv_obj_set_style_pad_all(panel,0,0);lv_obj_set_style_border_width(panel,0,0);lv_obj_set_style_radius(panel,32,0);
     lv_obj_set_style_clip_corner(panel,true,0);lv_obj_set_style_bg_color(panel,color(0xfffaf3),0);
     const lv_img_dsc_t *rowIcons[]={&icon_set_bright,&icon_set_volume};
+    const char *rowNames[]={"亮度","音量"};
     for(int i=0;i<2;i++) {
-      auto img=lv_img_create(panel);lv_img_set_src(img,rowIcons[i]);lv_obj_set_pos(img,22,i*66+15);
-      iconButton(panel,&icon_minus,224,i*66+9,76,48,i?VolumeDown:BrightnessDown,0xf3efe8);
-      iconButton(panel,&icon_plus,312,i*66+9,76,48,i?VolumeUp:BrightnessUp,0xf3efe8);
+      settingRow(panel,i*66,rowIcons[i],rowNames[i]);
+      iconButton(panel,&icon_minus,236,i*66+9,76,48,i?VolumeDown:BrightnessDown,0xf3efe8);
+      iconButton(panel,&icon_plus,324,i*66+9,76,48,i?VolumeUp:BrightnessUp,0xf3efe8);
     }
-    switchRow(panel,132,&icon_set_autooff,pet.autoOff,AutoOff);
-    switchRow(panel,198,&icon_set_night,pet.nightMute,NightMute);
-    auto row=[&](int y,const lv_img_dsc_t *icon) {auto img=lv_img_create(panel);lv_img_set_src(img,icon);lv_obj_set_pos(img,22,y+15);};
-    row(264,&icon_set_clock);button(panel,pet.hour24?"24H":"12H",276,273,120,48,Hour24,0xf3efe8);
-    row(330,&icon_set_start);
-    iconButton(panel,pet.startMode==game::Mode::Game?&icon_set_game:&icon_set_home,276,339,120,48,StartMode,0xf3efe8);
+    switchRow(panel,132,&icon_set_autooff,"自動熄屏",pet.autoOff,AutoOff);
+    switchRow(panel,198,&icon_set_dim,"自動調暗",!pet.keepBright,AutoDim);
+    switchRow(panel,264,&icon_set_night,"夜晚靜音",pet.nightMute,NightMute);
+    settingRow(panel,330,&icon_set_clock,"時間格式");button(panel,pet.hour24?"24H":"12H",280,339,120,48,Hour24,0xf3efe8);
     char tmp[16];snprintf(tmp,sizeof(tmp),"%uH",pet.offlineHours);
-    row(396,&icon_set_offline);button(panel,tmp,276,405,120,48,OfflineCap,0xf3efe8);
+    settingRow(panel,396,&icon_set_offline,"離線計算上限");button(panel,tmp,280,405,120,48,OfflineCap,0xf3efe8);
+    // Actions: full-width buttons with icon and name.
     const lv_img_dsc_t *actions[]={&icon_set_clock,&icon_set_sync,&icon_set_reload,&icon_set_info};
+    const char *actionNames[]={"設定日期時間","Wi-Fi 設定","重新載入素材","狀態 / 版本"};
     const int ids[]={EditTime,Sync,Reload,GoStatus};
-    for(int i=0;i<4;i++) iconButton(panel,actions[i],20+i*100,474,88,56,ids[i],0xede7fb);
-    label(panel,chargeConfigured?"充電 4.1V / 300mA":"充電停用",24,548,384,0x7a6e7f);
-    if(saveLocked) button(panel,"資料損壞：確認重設",20,590,392,60,ResetConfirm,0xffc7c7);
-    box(panel,0,saveLocked?650:590,10,20,0xfffaf3,0);  // bottom margin when scrolled to the end
+    for(int i=0;i<4;i++) {
+      auto b=iconButton(panel,actions[i],12,468+i*64,408,56,ids[i],0xede7fb);
+      lv_obj_align(lv_obj_get_child(b,0),LV_ALIGN_LEFT_MID,18,0);
+      label(b,actionNames[i],66,12,320);
+    }
+    label(panel,chargeConfigured?"充電 4.1V / 300mA":"充電停用",24,728,384,0x7a6e7f);
+    if(saveLocked) button(panel,"資料損壞：確認重設",20,770,392,60,ResetConfirm,0xffc7c7);
+    box(panel,0,saveLocked?830:770,10,20,0xfffaf3,0);  // bottom margin when scrolled to the end
     lv_obj_update_layout(panel);lv_obj_scroll_to_y(panel,keepScroll,LV_ANIM_OFF);
   } else if(page==Status) {
     topRow(false);
@@ -478,8 +612,10 @@ static void resultMessage(game::Result result) {
   else if(result!=game::Result::Full&&result!=game::Result::Tired) notify("操作無效");
 }
 // Full or tired: return to the pet and play the refuse clip. A sleeping pet stays asleep.
+static void closeSheet() {if(sheet) {lv_obj_del(sheet);sheet=nullptr;}}
+static void toRoom() {if(page!=Ambient) showPage(Ambient); else closeSheet();}
 static void refuse(game::Result result) {
-  if((result==game::Result::Full||result==game::Result::Tired)&&!pet.sleeping) {showPage(Game);setAction(6);}
+  if((result==game::Result::Full||result==game::Result::Tired)&&!pet.sleeping) {toRoom();setAction(6);}
   resultMessage(result);
 }
 static bool canAct() {
@@ -499,28 +635,110 @@ static bool setTime(int64_t epoch) {
   if(!rtc) notify("時間已設定，RTC寫入失敗",6000);
   return true;
 }
+// Care menu over the room: six snacks, then ball, games, rooms and close. Bottom corners
+// are rounded like the panel; everything stays inside x=33..447.
+static void exitView(lv_event_t *) {
+  if(!viewing) return;
+  lastInput=millis();viewing=false;
+  lv_obj_del_async(viewPad);viewPad=nullptr;
+  for(unsigned i=0;i<viewHiddenCount;i++) lv_obj_clear_flag(viewHidden[i],LV_OBJ_FLAG_HIDDEN);
+  viewHiddenCount=0;lv_obj_clear_flag(lv_layer_top(),LV_OBJ_FLAG_HIDDEN);
+  if(character) {
+    lv_img_set_zoom(character,256);
+    wanderY=targetY=std::clamp<float>(wanderY,wanderMinY(),wanderMaxY());  // back onto the normal floor
+    if(step.kind==behavior::Kind::Walk) targetX=wanderX;
+  }
+}
+static void enterView() {
+  if(viewing||page!=Ambient||!character) return;
+  closeSheet();viewing=true;charZoom=kViewZoom;viewHiddenCount=0;
+  // Hide every visible control; the background and CHIMMY stay. The status layer goes too.
+  const uint32_t n=lv_obj_get_child_cnt(screen);
+  for(uint32_t i=0;i<n&&viewHiddenCount<48;i++) {
+    lv_obj_t *o=lv_obj_get_child(screen,i);
+    if(o==background||o==character||lv_obj_has_flag(o,LV_OBJ_FLAG_HIDDEN)) continue;
+    lv_obj_add_flag(o,LV_OBJ_FLAG_HIDDEN);viewHidden[viewHiddenCount++]=o;
+  }
+  lv_obj_add_flag(lv_layer_top(),LV_OBJ_FLAG_HIDDEN);
+  lv_img_set_zoom(character,kViewZoom);
+  wanderY=targetY=std::clamp<float>(wanderY,wanderMinY(),wanderMaxY());
+  if(step.kind==behavior::Kind::Walk) targetX=wanderX;
+  // A touch anywhere (CHIMMY included) ends viewing.
+  viewPad=lv_obj_create(screen);lv_obj_set_pos(viewPad,0,0);lv_obj_set_size(viewPad,480,480);
+  lv_obj_set_style_bg_opa(viewPad,LV_OPA_TRANSP,0);lv_obj_set_style_border_width(viewPad,0,0);
+  lv_obj_clear_flag(viewPad,LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_event_cb(viewPad,exitView,LV_EVENT_CLICKED,nullptr);
+}
+static void openSheet() {
+  if(sheet||page!=Ambient) return;
+  sheet=box(screen,24,292,432,176,0xfffaf3,40);lv_obj_set_style_bg_opa(sheet,LV_OPA_90,0);
+  lv_obj_add_flag(sheet,LV_OBJ_FLAG_CLICKABLE);  // taps on the panel do not reach the room
+  const lv_img_dsc_t *foods[]={&icon_m_food0,&icon_m_food1,&icon_m_food2,&icon_m_food3,&icon_m_food4,&icon_m_food5};
+  for(int i=0;i<6;i++) iconButton(sheet,foods[i],9+i*70,14,64,64,Feed0+i,0xffe8cc);
+  const lv_img_dsc_t *row[]={&icon_m_outfit,&icon_m_game,&icon_m_room,&icon_close};
+  const int ids[]={GoOutfits,GoGames,GoRooms,ToggleSheet};
+  const uint32_t tints[]={0xfff1b8,0xdff4ff,0xded6f5,0xf3efe8};
+  for(int i=0;i<4;i++) iconButton(sheet,row[i],44+i*92,92,64,64,ids[i],tints[i]);
+}
+static void showFood(unsigned i) {
+  const lv_img_dsc_t *foods[]={&icon_m_food0,&icon_m_food1,&icon_m_food2,&icon_m_food3,&icon_m_food4,&icon_m_food5};
+  if(foodSprite) lv_obj_del(foodSprite);
+  foodSprite=lv_img_create(screen);lv_img_set_src(foodSprite,foods[i%6]);
+  lv_obj_set_pos(foodSprite,-100,-100);  // placed next frame, beside the moving character
+}
+// Little hearts float up from CHIMMY's head and fade (touch feedback, care rewards).
+static void spawnHearts(unsigned n) {
+  if(!character) return;
+  for(unsigned i=0;i<n;i++) {
+    auto h=lv_img_create(screen);lv_img_set_src(h,&icon_fx_heart);
+    const int x=lv_obj_get_x(character)+charSize()/2-13+int(esp_random()%90)-45,y=lv_obj_get_y(character)+40;
+    lv_obj_set_pos(h,x,y);lv_obj_clear_flag(h,LV_OBJ_FLAG_CLICKABLE);
+    lv_anim_t a;lv_anim_init(&a);lv_anim_set_var(&a,h);lv_anim_set_delay(&a,i*140);lv_anim_set_time(&a,1000);
+    lv_anim_set_values(&a,y,y-70);
+    lv_anim_set_exec_cb(&a,[](void *o,int32_t v){lv_obj_set_y(static_cast<lv_obj_t *>(o),v);});
+    lv_anim_set_ready_cb(&a,[](lv_anim_t *x){lv_obj_del_async(static_cast<lv_obj_t *>(x->var));});
+    lv_anim_start(&a);
+    lv_anim_t f;lv_anim_init(&f);lv_anim_set_var(&f,h);lv_anim_set_delay(&f,i*140+500);lv_anim_set_time(&f,500);
+    lv_anim_set_values(&f,LV_OPA_COVER,LV_OPA_TRANSP);
+    lv_anim_set_exec_cb(&f,[](void *o,int32_t v){lv_obj_set_style_opa(static_cast<lv_obj_t *>(o),v,0);});
+    lv_anim_start(&f);
+  }
+}
 static void control(int id) {
   if(transfer.active) {notify("USB素材傳輸中");return;}
   if(id>=Feed0&&id<Feed0+6) {
     if(!canAct()) return;advanceNow();
     const auto result=game::feed(pet,id-Feed0);
     if(result!=game::Result::Ok) {refuse(result);return;}
-    changed();showPage(Game);setAction(2);return;
+    // Eaten in place with the snack in hand; the favourite earns a happy hop and more hearts.
+    const unsigned food=id-Feed0;const bool favorite=food==pet.favoriteFood;
+    changed();toRoom();setAction(2);showFood(food);spawnHearts(favorite?5:2);
+    if(favorite) queuedAction=7;
+    return;
   }
-  if(id>=Play0&&id<Play0+2) {
+  if(id==Play0+1) {closeSheet();showPage(GamesHub);return;}  // was the bubble round
+  if(id>=PlayGame0&&id<PlayGame0+int(games::kGames)) {
+    if(!pack) {notify("示範素材：使用內建圖形，請由USB安裝素材",6000);return;}
+    playing=games::Id(id-PlayGame0);showPage(Play);return;
+  }
+  if(id>=Outfit0&&id<Outfit0+int(kMaxOutfits)) {
+    const unsigned i=id-Outfit0;
+    if(!pack||i>=pack->outfitCount||!canAct()) return;
+    if(i==pack->outfit) {showPage(Ambient);setAction(5);return;}
+    if(assetLoading) {notify("載入中，請稍等");return;}
+    pet.outfit=i;changed();
+    // Two atlases do not fit in PSRAM: drop the worn one first; the stand-in shows while loading.
+    stopSound();pack.reset();lv_img_cache_invalidate_src(nullptr);
+    showPage(Ambient);dressAfterLoad=true;requestAssets();
+    return;
+  }
+  if(id==Play0) {
     if(!canAct()) return;
     if(pet.sleeping) {notify("請先起床");return;}
     if(pet.energy<800) {refuse(game::Result::Tired);return;}
-    if(id==Play0) {
-      advanceNow();const auto result=game::play(pet,0);
-      if(result!=game::Result::Ok){refuse(result);return;}
-      changed();showPage(Game);setAction(3);
-    } else {
-      showPage(Toys);bubbleGame=true;bubbleScore=0;bubbleAt=millis();
-      lv_obj_clean(screen);toast=nullptr;topRow(false);
-      bubbleLabel=label(screen,"0 / 5",160,30,160);lv_obj_set_style_text_align(bubbleLabel,LV_TEXT_ALIGN_CENTER,0);
-      bubble=iconButton(screen,&icon_bubble,185,185,110,110,Bubble,0xdff4ff);
-    }
+    advanceNow();const auto result=game::play(pet,0);
+    if(result!=game::Result::Ok){refuse(result);return;}
+    changed();toRoom();setAction(3);spawnHearts(2);
     return;
   }
   if(id>=Room0&&id<Room0+int(kMaxBackgrounds)) {
@@ -528,7 +746,8 @@ static void control(int id) {
     pet.background=id-Room0;changed();showPage(Game);requestAssets();setAction(5);return;
   }
   switch(id) {
-    case GoGame:showPage(Game);break;
+    case GoGame:showPage(Ambient);break;
+    case ToggleSheet:if(sheet) closeSheet(); else openSheet();break;
     case GoAmbient:showPage(Ambient);break;
     case GoSettings:showPage(Settings);break;
     case GoFoods:if(canAct())showPage(Foods);break;
@@ -537,6 +756,7 @@ static void control(int id) {
     case GoStatus:showPage(Status);break;
     case Tap:
       if((page<=Ambient||page==Bus)&&canAct()) {
+        if(!pet.sleeping) spawnHearts(1);  // a heart says "got it" before the reaction
         // A random reaction, never the same one twice in a row.
         if(pet.sleeping) setAction(4);
         else if(pack&&pack->tapCount) {
@@ -550,8 +770,10 @@ static void control(int id) {
     case GoBus:showPage(Bus);break;
     case GoBusSetup:showPage(BusSetup);break;
     case Sleep:
-      if(!canAct())break;advanceNow();pet.sleeping=!pet.sleeping;pet.sleepSeconds=0;changed();
-      showPage(page);break;
+      // The moon/sun button: a manual sleep is not woken at 7:00 (only the pet's own night sleep is).
+      if(!canAct())break;
+      if(pet.sleeping) wakeNow(); else sleepNow(false);
+      break;
     case BrightnessDown:pet.brightness=std::max<int>(20,pet.brightness-20);changed();display.setBrightness(pet.brightness);break;
     case BrightnessUp:pet.brightness=std::min<int>(220,pet.brightness+20);changed();display.setBrightness(pet.brightness);break;
     case VolumeDown:pet.volume=std::max<int>(0,pet.volume-10);changed();break;
@@ -560,8 +782,7 @@ static void control(int id) {
     case AutoOff:pet.autoOff=!pet.autoOff;changed();break;
     case Hour24:pet.hour24=!pet.hour24;changed();showPage(Settings);break;
     case NightMute:pet.nightMute=!pet.nightMute;changed();break;
-    case StartMode:
-      pet.startMode=pet.startMode==game::Mode::Game?game::Mode::Ambient:game::Mode::Game;changed();showPage(Settings);break;
+    case AutoDim:pet.keepBright=!pet.keepBright;changed();break;
     case OfflineCap:pet.offlineHours=pet.offlineHours==1?6:pet.offlineHours==6?12:1;changed();showPage(Settings);break;
     case EditTime: {
       time_t t=nowUtc();
@@ -585,17 +806,9 @@ static void control(int id) {
     }
     case Reload:requestAssets();break;
     case Sync:showPage(WifiSetup);break;
-    case Bubble:
-      if(!bubbleGame)break;
-      if(++bubbleScore>=5) {
-        advanceNow();const auto result=game::play(pet,1);bubbleGame=false;
-        if(result==game::Result::Ok) {changed();showPage(Game);setAction(7);}
-        else {showPage(Game);refuse(result);}
-      } else {
-        char score[16];snprintf(score,sizeof(score),"%u / 5",bubbleScore);lv_label_set_text(bubbleLabel,score);
-        lv_obj_set_pos(bubble,70+esp_random()%230,110+esp_random()%220);
-      }
-      break;
+    case GoGames:closeSheet();showPage(GamesHub);break;
+    case GoOutfits:closeSheet();showPage(Outfits);break;
+    case ViewMode:enterView();break;
     case ResetConfirm:
       showPage(Status);button(screen,"重設育成資料？",70,340,340,64,ResetYes,0xffc7c7);break;
     case ResetYes:
@@ -607,22 +820,31 @@ static void control(int id) {
 }
 static void updateAnimation() {
   if((page!=Game&&page!=Ambient&&page!=Bus)||!displayOn||transfer.active) return;
+  if(pack&&character) wanderTick();
+  // After wanderTick: a step that just started resets actionAt, and a stale delta would end it at once.
   const uint32_t delta=millis()-actionAt;
   if(pack&&character) {
-    wanderTick();
     const Clip &c=clipFor(action);uint32_t total=0;for(unsigned i=0;i<c.count;i++)total+=c.durations[i];
     if(!total)return;
-    if(!c.loop&&delta>=total) {setAction(pet.sleeping?4:0);return;}
+    if(!c.loop&&delta>=total) {
+      const int next=queuedAction>=0&&!pet.sleeping?queuedAction:pet.sleeping?4:0;
+      queuedAction=-1;setAction(next);return;
+    }
     uint32_t phase=delta%total;unsigned index=0;
     while(index+1<c.count&&phase>=c.durations[index]) {phase-=c.durations[index];index++;}
     drawFrame(c.frames[index]);
-    const bool walking=wander==Wander::Walk&&resting(action)&&!pet.sleeping;
+    const bool walking=step.kind==behavior::Kind::Walk&&resting(action)&&!pet.sleeping;
     const bool lively=action==3||action==7||(action>=ActTap0&&action<ActWalk);
     // Walking hops a little on each step; sitting and sleeping stay still.
     const int bounce=walking?-int(std::fabs(std::sin(millis()/170.0))*7):
       action==ActSit||action==4?0:int(std::sin(delta/220.0)*(lively?8:2));
     const bool home=pet.sleeping;  // asleep: stays at the centre spot
     lv_obj_set_pos(character,home?restX():int(wanderX),(home?homeY():int(wanderY))+bounce);
+    if(foodSprite) {
+      // In both hands at chest height, gone after most of the eating clip.
+      if(action!=2||delta>total*7/10) {lv_obj_del(foodSprite);foodSprite=nullptr;}
+      else lv_obj_set_pos(foodSprite,lv_obj_get_x(character)+charSize()/2-26,lv_obj_get_y(character)+charSize()*58/100);
+    }
   } else if(fallback) {
     if(action!=0&&action!=4&&delta>1500) setAction(pet.sleeping?4:0);
     const bool blink=pet.sleeping||(millis()%3000<160);
@@ -687,9 +909,11 @@ static void updateLabels() {
     if(strcmp(lv_label_get_text(dateLabel),buf))lv_label_set_text(dateLabel,buf);
   }
   if(page==Bus) busTick();
-  if(page==Game) {
+  if(page==Ambient) {
     const int values[]={pet.hunger,pet.mood,pet.energy};
     for(int i=0;i<3;i++)if(stats[i])lv_bar_set_value(stats[i],values[i]/100,LV_ANIM_OFF);
+    if(bondLabel) {char b[12];snprintf(b,sizeof(b),"%lu",(unsigned long)std::min<uint32_t>(pet.bond,999));
+      if(strcmp(lv_label_get_text(bondLabel),b))lv_label_set_text(bondLabel,b);}
   }
   if(infoLabel&&page==WifiSetup) {
     char b[160];const auto j=net::joinState();
@@ -739,7 +963,7 @@ static void powerTick() {
   if(displayOn) {
     const uint32_t idle=millis()-lastInput;
     if(pet.autoOff&&idle>120000) setDisplay(false,pet.brightness);
-    else display.setBrightness(idle>30000?std::max<int>(20,pet.brightness/3):pet.brightness);
+    else display.setBrightness(idle>30000&&!pet.keepBright?std::max<int>(20,pet.brightness/3):pet.brightness);
   }
 }
 // Wi-Fi stays up (remembered networks); every new connection also re-syncs the clock over NTP.
@@ -791,9 +1015,11 @@ static void command(JsonDocument &request,JsonDocument &reply) {
     reply["utc"]=nowUtc();int64_t rtc=0;reply["rtc_valid"]=rtcRead(rtc);reply["rtc_utc"]=rtc;
     reply["save_generation"]=pet.generation;reply["save_locked"]=saveLocked;reply["dirty"]=dirty;
     reply["background"]=pet.background;reply["background_count"]=pack?pack->backgroundCount:0;
+    reply["outfit"]=pet.outfit;reply["outfit_count"]=pack?pack->outfitCount:0;
     reply["hunger"]=pet.hunger;reply["mood"]=pet.mood;reply["energy"]=pet.energy;
     reply["sleeping"]=pet.sleeping;reply["bond"]=pet.bond;reply["flushes"]=flushCount;
-    reply["action"]=action;reply["bubble_score"]=bubbleScore;reply["bubble_game"]=bubbleGame;
+    reply["action"]=action;reply["step_kind"]=int(step.kind);reply["step_ms"]=step.ms;reply["step_age"]=millis()-stepAt;
+    reply["idle_ms"]=millis()-lastInput;reply["gestures"]=pack?pack->gestureMask:0;reply["game"]=page==Play?int(playing):-1;
     reply["brightness"]=pet.brightness;reply["volume"]=pet.volume;reply["night_mute"]=pet.nightMute;
     reply["max_flush_us"]=maxFlushUs;reply["max_loop_us"]=maxLoopUs;reply["touches"]=touchCount;
     reply["frames"]=frameCount;reply["audio_failures"]=audioFailures.load();
@@ -820,7 +1046,7 @@ static void command(JsonDocument &request,JsonDocument &reply) {
   else if(strcmp(cmd,"control")==0) {
     const int value=request["value"]|0;
     if(!request["value"].is<int>()||!((value>=GoGame&&value<=Tap)||(value>=Feed0&&value<Feed0+6)||
-       (value>=Play0&&value<Play0+2)||(value>=Room0&&value<Room0+int(kMaxBackgrounds))||(value>=BrightnessDown&&value<=ResetConfirm)||value==GoBus||value==GoBusSetup))
+       (value>=Play0&&value<Play0+2)||(value>=Room0&&value<Room0+int(kMaxBackgrounds))||(value>=BrightnessDown&&value<=ResetConfirm)||(value>=GoBus&&value<=GoOutfits)||(value>=PlayGame0&&value<PlayGame0+int(games::kGames))||(value>=Outfit0&&value<Outfit0+int(kMaxOutfits))))
       error="invalid control";
     else {lastInput=millis();control(value);ok=true;}
   } else if(strcmp(cmd,"wifi")==0) {
@@ -927,11 +1153,12 @@ void setup() {
   int64_t rtc=0;
   if(rtcRead(rtc)) {timeval tv{time_t(rtc),0};settimeofday(&tv,nullptr);clockQuality=1;}
   game::offline(pet,nowUtc());
-  if(pet.startMode==game::Mode::Clock) pet.startMode=game::Mode::Ambient;  // clock mode was removed
   lastTickUs=esp_timer_get_time();lastInput=millis();
   Serial.println("INIT SD");
+  engine=behavior::Engine(esp_random());
+  if(pet.favoriteFood>=6) {pet.favoriteFood=esp_random()%6;changed();}  // this pet's favourite snack
   net::begin();bus::begin();bus::attach(net::web());
-  assets.begin();showPage(pet.startMode==game::Mode::Game?Game:Ambient);
+  assets.begin();showPage(Ambient);
   if(saveLocked)notify("資料損壞或保存初始化失敗：請檢查設定",15000);
   else {
     saveNow();
@@ -944,6 +1171,8 @@ void setup() {
 void loop() {
   const uint64_t start=esp_timer_get_time();
   advanceNow();updateBattery();serialTick();powerTick();networkTick();
+  static uint32_t lastSleepCheck=0;
+  if(millis()-lastSleepCheck>=1000) {lastSleepCheck=millis();sleepTick();}
   AssetResult loaded;
   if(assets.poll(loaded)) {
     assetLoading=false;
@@ -951,6 +1180,7 @@ void loop() {
     else if(!loaded.pack) {
       if(pack&&pet.background!=pack->selected){pet.background=pack->selected;changed();}
       showPage(page);notify(loaded.error,10000);
+      if(!pack&&pet.outfit) {pet.outfit=0;changed();dressAfterLoad=false;requestAssets();}  // back to everyday clothes
     }
     else {
       stopSound();
@@ -958,7 +1188,9 @@ void loop() {
       auto oldPack=std::move(pack);
       pack.reset(loaded.pack);
       if(pet.background!=pack->selected){pet.background=pack->selected;changed();}  // pack has fewer rooms
+      if(pet.outfit!=pack->outfit){pet.outfit=pack->outfit;changed();}  // or fewer outfits
       showPage(page);
+      if(dressAfterLoad) {dressAfterLoad=false;if(page==Ambient)setAction(5);}
     }
   }
   if(!capture&&millis()-lastFrameAt>=66) {lastFrameAt=millis();updateAnimation();}
@@ -966,7 +1198,7 @@ void loop() {
   if(millis()-lastLabels>=250){lastLabels=millis();updateLabels();}
   if(dirty&&!saveLocked&&!transfer.active&&millis()-dirtyAt>=2000&&
      (urgentSave||millis()-lastSave>=60000||pet.generation<2)) saveNow();
-  if(bubbleGame&&millis()-bubbleAt>30000)showPage(Game);
+  if(page==Play) games::tick();
   if(page==Game&&millis()-lastInput>45000&&!transfer.active)showPage(Ambient);
   if(capture&&millis()-captureAt>15000)capture=false;
   if(!capture)lv_timer_handler();

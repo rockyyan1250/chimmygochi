@@ -100,9 +100,6 @@ async function load(file, holes) {
 }
 
 const raw = resolve(root, config.dir || 'raw');
-const ref = await load(join(raw, config.reference), config.frames?.[config.reference]?.holes);
-const refScale = HEIGHT / (ref.box.y1 - ref.box.y0);
-const refU = (ref.box.x0 + ref.box.x1) / 2 / ref.w, refV = ref.box.y1 / ref.h;
 
 // Frames: the reference first, then every existing file the clips use (missing ones fall back).
 // Optional clips (tap reactions, walk, sit) are dropped when none of their images exist yet.
@@ -110,8 +107,9 @@ const names = [config.reference], missing = new Set();
 const present = clip => clip.frames.some(f => existsSync(join(raw, f)));
 const taps = (config.taps || []).filter(present), walk = config.walk && present(config.walk) ? config.walk : null;
 const sit = config.sit && present(config.sit) ? config.sit : null;
+const gestures = Object.fromEntries(Object.entries(config.gestures || {}).filter(([, c]) => present(c)));
 if (taps.length > 6) throw Error('chimmy.json: at most 6 tap reactions');
-for (const clip of [...actions.map(a => config.clips?.[a] ?? Error(`chimmy.json: clip "${a}" missing`)), ...taps, walk, sit]) {
+for (const clip of [...actions.map(a => config.clips?.[a] ?? Error(`chimmy.json: clip "${a}" missing`)), ...taps, walk, sit, ...Object.values(gestures)]) {
   if (clip instanceof Error) throw clip;
   for (const f of clip?.frames || []) {
     if (names.includes(f) || missing.has(f)) continue;
@@ -121,12 +119,28 @@ for (const clip of [...actions.map(a => config.clips?.[a] ?? Error(`chimmy.json:
 if (names.length > 16) throw Error(`${names.length} frames used; the atlas holds at most 16: ${names.join(', ')}`);
 if (missing.size) console.warn(`Not found yet, using ${config.reference} instead: ${[...missing].join(', ')}`);
 
-const outDir = join(root, 'frames'), frames = [], sheet = [];
+// Outfits: the same poses (same file names) in another folder, e.g. raw/outfits/pajama/stand_normal.png.
+// Each becomes its own atlas with the base frame order, so every clip works in every outfit.
+const outfits = config.outfits || [];
+if (outfits.length > 7) throw Error('chimmy.json: at most 7 outfits besides the everyday one');
+for (const o of outfits) if (!o.name || !o.dir) throw Error('chimmy.json: each outfit needs "name" and "dir"');
+
+const outDir = join(root, 'frames');
 mkdirSync(outDir, { recursive: true });
-{
+// Normalizes one set of poses (base or an outfit) into frames/<sub>; returns their paths and a sheet.
+async function frameSet(dir, sub, label) {
+  const refFile = join(dir, config.reference);
+  if (!existsSync(refFile)) throw Error(`${label}: ${config.reference} is required`);
+  const ref = await load(refFile, config.frames?.[config.reference]?.holes);
+  const refScale = HEIGHT / (ref.box.y1 - ref.box.y0);
+  const refU = (ref.box.x0 + ref.box.x1) / 2 / ref.w, refV = ref.box.y1 / ref.h;
+  const target = join(outDir, sub), frames = [], sheet = [], lacking = [];
+  mkdirSync(target, { recursive: true });
   for (const [index, name] of names.entries()) {
-    const opt = config.frames?.[name] || {};
-    const img = await load(join(raw, name), opt.holes);
+    const src = existsSync(join(dir, name)) ? name : config.reference;
+    if (src !== name) lacking.push(name);
+    const opt = config.frames?.[src] || {};
+    const img = await load(join(dir, src), opt.holes);
     const { x0, y0, x1, y1 } = img.box, bw = x1 - x0, bh = y1 - y0;
     const mode = opt.mode || 'fit';
     let s, left, top;
@@ -155,17 +169,23 @@ mkdirSync(outDir, { recursive: true });
       if (cx < 0 || cy < 0 || cx >= SIZE || cy >= SIZE) { if (scaled[src + 3] > 32) clipped = true; continue; }
       scaled.copy(canvas, (cy * SIZE + cx) * 4, src, src + 4);
     }
-    if (clipped) console.warn(`${name}: cut off at the ${SIZE}px edge; adjust scale/dx/dy`);
-    const file = `${String(index).padStart(2, '0')}-${name.replace(/\.png$/i, '')}.png`;
-    await sharp(canvas, { raw: { width: SIZE, height: SIZE, channels: 4 } }).png().toFile(join(outDir, file));
-    frames.push(`frames/${file}`);
-    sheet.push({ file: join(outDir, file), name });
+    if (clipped) console.warn(`${label} ${name}: cut off at the ${SIZE}px edge; adjust scale/dx/dy`);
+    const file = `${String(index).padStart(2, '0')}-${name.replace(/.png$/i, '')}.png`;
+    await sharp(canvas, { raw: { width: SIZE, height: SIZE, channels: 4 } }).png().toFile(join(target, file));
+    frames.push(['frames', sub, file].filter(Boolean).join('/'));
+    sheet.push({ file: join(target, file), name });
   }
+  if (sub && lacking.length) console.warn(`${label}: not found yet, using ${config.reference} instead: ${lacking.join(', ')}`);
+  return { frames, sheet };
 }
+const base = await frameSet(raw, '', 'everyday');
+const frames = base.frames, sheet = base.sheet;
+const dressed = [];
+for (const [i, o] of outfits.entries()) dressed.push({ name: o.name, ...(await frameSet(resolve(root, o.dir), `outfit${i + 1}`, o.name)) });
 
 const indexed = c => ({ ...c, frames: c.frames.map(f => names.indexOf(missing.has(f) ? config.reference : f)) });
 const clips = Object.fromEntries(actions.map(a => [a, indexed(config.clips[a])]));
-const extra = { taps: taps.map(indexed), ...(walk && { walk: indexed(walk) }), ...(sit && { sit: indexed(sit) }) };
+const extra = { gestures: Object.fromEntries(Object.entries(gestures).map(([k, c]) => [k, indexed(c)])), taps: taps.map(indexed), ...(walk && { walk: indexed(walk) }), ...(sit && { sit: indexed(sit) }) };
 const rel = p => relative(root, resolve(root, p)).replaceAll('\\', '/');
 // Generated backgrounds are usually 1024px: crop to square and flatten to the firmware's 480x480.
 const rooms = [];
@@ -177,10 +197,12 @@ for (const [i, b] of backgrounds.entries()) {
 writeFileSync(join(root, 'pack.json'), JSON.stringify({
   schema: 2, id: config.id || 'chimmy-v1', placeholder: config.placeholder !== false,
   frames, backgrounds: rooms, clips, ...extra,
+  outfits: [{ name: config.outfitName || '平時', frames }, ...dressed.map(o => ({ name: o.name, frames: o.frames }))],
   sounds: Object.fromEntries(Object.entries(config.sounds).map(([k, v]) => [k, rel(v)])),
 }, null, 2));
 
 // Contact sheet: red = foot line, blue = centre, to spot frames that jump between poses.
+async function contactSheet(sheet, file) {
 const cols = 4, rows = Math.ceil(sheet.length / cols), cell = SIZE + 8;
 const grid = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${cols * cell}" height="${rows * (cell + 20)}">
   <rect width="100%" height="100%" fill="#e8e2d8"/>${sheet.map((f, i) => {
@@ -191,6 +213,9 @@ const grid = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${cols 
       <text x="${x}" y="${y + SIZE + 15}" font-family="sans-serif" font-size="13" fill="#333">${i}: ${f.name}</text>`;
   }).join('')}</svg>`);
 await sharp(grid).composite(sheet.map((f, i) => ({ input: f.file,
-  left: (i % cols) * cell + 4, top: Math.floor(i / cols) * (cell + 20) + 4 }))).png().toFile(join(root, 'preview.png'));
-console.log(`${names.length} frames, ${backgrounds.length} backgrounds -> ${join(root, 'pack.json')}; check ${join(root, 'preview.png')}`);
+  left: (i % cols) * cell + 4, top: Math.floor(i / cols) * (cell + 20) + 4 }))).png().toFile(file);
+}
+await contactSheet(sheet, join(root, 'preview.png'));
+for (const [i, o] of dressed.entries()) await contactSheet(o.sheet, join(root, `preview-outfit${i + 1}.png`));
+console.log(`${names.length} frames, ${outfits.length + 1} outfits, ${backgrounds.length} backgrounds -> ${join(root, 'pack.json')}; check ${join(root, 'preview.png')}`);
 console.log(`Next: node tools/assets.mjs ${relative(process.cwd(), join(root, 'pack.json'))} assets/pack`);

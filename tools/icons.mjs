@@ -67,6 +67,25 @@ const art = {
   info: `<circle cx="32" cy="32" r="24" fill="#cfe6ff" ${line()}/><circle cx="32" cy="20" r="3.5" fill="${O}"/><path d="M32 29V46" ${line(5)}/>`,
   minus: `<path d="M14 32H50" ${line(8)}/>`,
   plus: `<path d="M14 32H50M32 14V50" ${line(8)}/>`,
+  broccoli: `<path d="M27 36h10l-1 20h-8Z" fill="#a5d66f" ${line()}/>
+    <circle cx="21" cy="29" r="11" fill="#4caf50" ${line(2.5)}/><circle cx="43" cy="29" r="11" fill="#4caf50" ${line(2.5)}/>
+    <circle cx="32" cy="19" r="12" fill="#66bb6a" ${line(2.5)}/>`,
+  cushion: `<rect x="5" y="14" width="54" height="40" rx="17" fill="#ffb3c7" ${line()}/>
+    <path d="M14 22q18 6 36 0M14 46q18-6 36 0" fill="none" stroke="#f08fac" stroke-width="2.5"/><circle cx="32" cy="34" r="3.5" fill="#e57399"/>`,
+  controller: `<rect x="5" y="19" width="54" height="30" rx="15" fill="#c9b8f2" ${line()}/>
+    <path d="M17 29v10M12 34h10" ${line(4)}/><circle cx="42" cy="30" r="3.5" fill="#ff7a93"/><circle cx="49" cy="37" r="3.5" fill="#7cc8f0"/>`,
+  hand: `<path d="M19 54V27a5 5 0 0 1 10 0v-9a5 5 0 0 1 10 0v6a5 5 0 0 1 10 0v18q0 12-14 12h-6q-10 0-10-12Z" fill="#fff" ${line()}/>
+    <path d="M10 22q-4-6 2-10M54 20q4-6-2-10" fill="none" stroke="#ff9eb5" stroke-width="3.5" stroke-linecap="round"/>`,
+  star: `<path d="M32 6l7.6 15.4 17 2.5-12.3 12 2.9 16.9L32 44.8 16.8 52.8l2.9-16.9L7.4 23.9l17-2.5Z" fill="#ffd23f" ${line()}/>`,
+  up: `<path d="M32 8 54 34H41v20H23V34H10Z" fill="#7fd3b8" ${line()}/>`,
+  question: `<circle cx="32" cy="32" r="25" fill="#ffd9a3" ${line()}/><path d="M24 25q0-10 8-10t8 9q0 6-8 9v5" fill="none" ${line(5)}/>
+    <circle cx="32" cy="48" r="3.5" fill="${O}"/>`,
+  dim: `${[0,45,90,135,180,225,270,315].map(a=>`<path d="M32 8V14" stroke="#c9c2cd" stroke-width="4" stroke-linecap="round" transform="rotate(${a} 32 32)"/>`).join('')}
+    <circle cx="32" cy="32" r="13" fill="#ffc96b" ${line()}/><path d="M32 19A13 13 0 0 1 32 45Z" fill="#8a7f8f"/>`,
+  eye: `<path d="M5 32Q32 6 59 32Q32 58 5 32Z" fill="#fff" ${line()}/><circle cx="32" cy="32" r="11" fill="#7cc8f0" ${line(3)}/>
+    <circle cx="32" cy="32" r="4.5" fill="${O}"/><circle cx="36" cy="28" r="2" fill="#fff"/>`,
+  shirt: `<path d="M22 10 12 14 4 26l8 6 4-4v26h32V28l4 4 8-6-8-12-10-4q-10 10-20 0Z" fill="#ffd84d" ${line()}/><circle cx="32" cy="30" r="3" fill="#ff6b6b"/><circle cx="32" cy="41" r="3" fill="#ff6b6b"/>`,
+  close: `<path d="M20 20 44 44M44 20 20 44" ${line(7)}/>`,
   ok: `<path d="M14 34 27 47 51 19" fill="none" stroke="#3fb37f" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>`,
 };
 // name -> [art, pixel size]
@@ -77,10 +96,16 @@ const icons = {
   food0: ['onigiri', 72], food1: ['pudding', 72], food2: ['strawberry', 72],
   food3: ['apple', 72], food4: ['sandwich', 72], food5: ['milk', 72],
   toy0: ['ball', 72], toy1: ['bubbles', 72], bubble: ['bubbles', 84],
-  stat_food: ['onigiri', 20], stat_mood: ['heart', 20], stat_energy: ['bolt', 20],
+  stat_food: ['onigiri', 20], stat_mood: ['heart', 20], stat_energy: ['bolt', 20], stat_bond: ['paw', 20],
   charge: ['bolt', 22], usb: ['plug', 22],
-  nav_bus: ['bus', 32], wifi_on: ['wifi', 24], wifi_wait: ['wifiWait', 24], wifi_off: ['wifiOff', 24],
-  set_bright: ['sun', 34], set_volume: ['speaker', 34], set_autooff: ['screen', 34], set_night: ['bellOff', 34],
+  nav_bus: ['bus', 32], nav_heart: ['heart', 32], view: ['eye', 34], fx_heart: ['heart', 26], close: ['close', 34],
+  m_food0: ['onigiri', 52], m_food1: ['pudding', 52], m_food2: ['strawberry', 52],
+  m_food3: ['apple', 52], m_food4: ['sandwich', 52], m_food5: ['milk', 52],
+  m_ball: ['ball', 52], m_bubble: ['bubbles', 52], m_room: ['picture', 52], m_outfit: ['shirt', 52], m_game: ['controller', 52],
+  g_broccoli: ['broccoli', 52], g_ball: ['ball', 56], g_cushion: ['cushion', 128], g_life: ['heart', 28],
+  g_card0: ['onigiri', 64], g_card1: ['ball', 64], g_card2: ['cushion', 64], g_card3: ['star', 64],
+  g_wave: ['hand', 52], g_cheer: ['star', 52], g_hop: ['up', 52], g_look: ['question', 52], wifi_on: ['wifi', 24], wifi_wait: ['wifiWait', 24], wifi_off: ['wifiOff', 24],
+  set_bright: ['sun', 34], set_dim: ['dim', 34], set_volume: ['speaker', 34], set_autooff: ['screen', 34], set_night: ['bellOff', 34],
   set_clock: ['clock', 34], set_start: ['power', 34], set_offline: ['hourglass', 34], set_sync: ['wifi', 34],
   set_reload: ['refresh', 34], set_info: ['info', 34], set_game: ['paw', 34], set_home: ['house', 34],
   minus: ['minus', 28], plus: ['plus', 28], prev: ['back', 28], next: ['next', 28], ok: ['ok', 34],

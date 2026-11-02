@@ -36,9 +36,9 @@ bool Assets::activate(const char *root) {
   const bool ok=p.putString("active",root)==strlen(root);
   p.end();return ok;
 }
-bool Assets::request(const char *root,uint8_t background,uint32_t generation,const AssetPack *reuse) {
-  if(!ready||!root||!*root||strlen(root)>=96||background>=kMaxBackgrounds) return false;
-  Request r{};snprintf(r.root,sizeof(r.root),"%s",root);r.background=background;r.generation=generation;r.reuse=reuse;
+bool Assets::request(const char *root,uint8_t background,uint8_t outfit,uint32_t generation,const AssetPack *reuse) {
+  if(!ready||!root||!*root||strlen(root)>=96||background>=kMaxBackgrounds||outfit>=kMaxOutfits) return false;
+  Request r{};snprintf(r.root,sizeof(r.root),"%s",root);r.background=background;r.outfit=outfit;r.generation=generation;r.reuse=reuse;
   return xQueueSend(requests,&r,0)==pdTRUE;
 }
 bool Assets::poll(AssetResult &r) {return ready&&xQueueReceive(results,&r,0)==pdTRUE;}
@@ -86,6 +86,15 @@ bool Assets::load(const Request &r,AssetResult &result) {
   const int schema=doc["schema"]|0;
   const char *atlasName=schema==2?doc["atlas"].as<const char *>():
     schema==1?doc["outfits"][0]["atlas"].as<const char *>():nullptr;
+  // Schema 2 outfits (optional): [{name, atlas, thumb}], the first being the everyday one.
+  JsonArray outfits=schema==2?doc["outfits"].as<JsonArray>():JsonArray();
+  if(outfits.size()>kMaxOutfits) return fail("at most 8 outfits");
+  if(outfits.size()) {
+    pack->outfitCount=outfits.size();pack->outfit=r.outfit<outfits.size()?r.outfit:0;
+    atlasName=outfits[pack->outfit]["atlas"];
+  }
+  snprintf(pack->outfitNames[0],sizeof(pack->outfitNames[0]),"%s","平時");
+  for(unsigned i=0;i<outfits.size();i++) snprintf(pack->outfitNames[i],sizeof(pack->outfitNames[i]),"%s",outfits[i]["name"]|"");
   const size_t backgrounds=schema==2?doc["backgrounds"].size():1;
   if(!atlasName||!backgrounds||backgrounds>kMaxBackgrounds) return fail("manifest schema invalid");
   pack->placeholder=doc["placeholder"]|true;
@@ -100,7 +109,7 @@ bool Assets::load(const Request &r,AssetResult &result) {
   };
   // Same pack already on screen (background change): share its verified atlas, so memory never
   // holds two copies of the largest file.
-  if(r.reuse&&r.reuse->atlas&&strcmp(r.reuse->root,r.root)==0) {
+  if(r.reuse&&r.reuse->atlas&&strcmp(r.reuse->root,r.root)==0&&r.reuse->outfit==pack->outfit) {
     pack->atlas=r.reuse->atlas;pack->atlasHeader=r.reuse->atlasHeader;
   } else {
     pack->atlas=std::make_shared<Blob>();
@@ -116,6 +125,11 @@ bool Assets::load(const Request &r,AssetResult &result) {
     auto &h=pack->thumbHeaders[i];
     if(!image(doc["backgrounds"][i]["thumb"],pack->thumbs[i],h,2)||h.width>160||h.height>160||h.frames!=1)
       return fail("background thumbnail invalid (max 160px)");
+  }
+  for(unsigned i=0;i<outfits.size();i++) {
+    auto &h=pack->outfitThumbHeaders[i];
+    if(!image(outfits[i]["thumb"],pack->outfitThumbs[i],h,3)||h.width>160||h.height>160||h.frames!=1)
+      return fail("outfit thumbnail invalid (max 160px)");
   }
   for(unsigned i=0;i<4;i++) {
     const char *name=doc["sounds"][sounds[i]];
@@ -154,6 +168,12 @@ bool Assets::load(const Request &r,AssetResult &result) {
   for(JsonObject t:taps) if(!parse(t,pack->taps[pack->tapCount++])) return fail(clipError);
   if(doc["walk"].is<JsonObject>()&&!parse(doc["walk"],pack->walk)) return fail(clipError);
   if(doc["sit"].is<JsonObject>()&&!parse(doc["sit"],pack->sit)) return fail(clipError);
+  for(unsigned g=0;g<behavior::kGestures;g++) {
+    JsonObject c=doc["gestures"][behavior::gestureNames[g]];
+    if(!c) continue;
+    if(!parse(c,pack->gestures[g])) return fail(clipError);
+    pack->gestureMask|=1<<g;
+  }
   result.pack=pack.release();return true;
 }
 uint32_t Assets::benchRead(const char *path,size_t chunk,unsigned count) {
@@ -185,6 +205,14 @@ bool Assets::verifyPack(const char *root,String &error) {
     count=result.pack->backgroundCount;
     if(first) delete result.pack;
     else first.reset(result.pack);
+  }
+  // Every other outfit's atlas, one at a time (two atlases do not fit in PSRAM together).
+  const unsigned outfits=first->outfitCount;first.reset();
+  for(uint8_t outfit=1;outfit<outfits;outfit++) {
+    Request r{};snprintf(r.root,sizeof(r.root),"%s",root);r.outfit=outfit;
+    AssetResult result;
+    if(!load(r,result)) {error=result.error;return false;}
+    delete result.pack;
   }
   return true;
 }

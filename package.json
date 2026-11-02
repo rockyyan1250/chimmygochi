@@ -8,7 +8,8 @@
     "assets": "node tools/assets.mjs",
     "prep-images": "node tools/prep-images.mjs",
     "check": "node tools/validate.mjs",
-    "test:battery": "node tools/battery-test.mjs",
+    "test:battery": "node tools/host-test.mjs battery-test",
+    "test:behavior": "node tools/host-test.mjs behavior-test",
     "build": "node tools/build.mjs",
     "upload": "node tools/build.mjs upload",
     "device": "node tools/device.mjs"

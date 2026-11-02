@@ -7,6 +7,7 @@
 #include <mbedtls/sha256.h>
 #include <memory>
 #include "GameModel.h"
+#include "Behavior.h"
 
 constexpr const char *actionNames[]={"idle","tap","eat","play","sleep","dress","refuse","happy"};
 struct Clip {
@@ -21,7 +22,7 @@ struct Blob {
   size_t size=0;
   ~Blob(){free(data);}
 };
-constexpr unsigned kMaxBackgrounds=8,kMaxTaps=6;
+constexpr unsigned kMaxBackgrounds=8,kMaxTaps=6,kMaxOutfits=8;
 struct AssetPack {
   // Shared so a background change can keep the (multi-MB) character atlas instead of loading a copy.
   std::shared_ptr<Blob> atlas;
@@ -29,8 +30,15 @@ struct AssetPack {
   game::ImageHeader atlasHeader{},backgroundHeader{},thumbHeaders[kMaxBackgrounds]{};
   Clip clips[8],taps[kMaxTaps],walk,sit;  // taps: random reactions; walk/sit: optional (count 0)
   uint8_t tapCount=0;
+  Clip gestures[behavior::kGestures];  // the pet's own acts (look, smile, ...); see gestureMask
+  uint8_t gestureMask=0;  // bit per behavior::Gesture present in the pack
   bool placeholder=true;
   uint8_t backgroundCount=1,selected=0;  // selected: index of the loaded background
+  // Outfits: one atlas each with the same frame layout; only the worn one is in memory.
+  uint8_t outfitCount=1,outfit=0;
+  char outfitNames[kMaxOutfits][32]{};
+  Blob outfitThumbs[kMaxOutfits];
+  game::ImageHeader outfitThumbHeaders[kMaxOutfits]{};
   char root[96]{};
 };
 struct AssetResult {
@@ -42,7 +50,7 @@ class Assets {
   SPIClass spi{HSPI};
   QueueHandle_t requests=nullptr,results=nullptr;
   // reuse: the pack on screen; it stays alive until this request's result is consumed.
-  struct Request {char root[96];uint8_t background;uint32_t generation;const AssetPack *reuse;};
+  struct Request {char root[96];uint8_t background,outfit;uint32_t generation;const AssetPack *reuse;};
   static void worker(void *);
   bool load(const Request &,AssetResult &);
   bool readBlob(const String &,Blob &,size_t,const char *);
@@ -50,7 +58,7 @@ class Assets {
   SemaphoreHandle_t mutex=nullptr;
   bool ready=false;
   bool begin();
-  bool request(const char *root,uint8_t background,uint32_t generation,const AssetPack *reuse=nullptr);
+  bool request(const char *root,uint8_t background,uint8_t outfit,uint32_t generation,const AssetPack *reuse=nullptr);
   bool poll(AssetResult &r);
   String activeRoot();
   bool activate(const char *root);
