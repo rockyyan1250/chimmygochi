@@ -54,6 +54,13 @@ const art = {
   power: `<path d="M21 17A20 20 0 1 0 43 17" fill="none" stroke="#3fb37f" stroke-width="6" stroke-linecap="round"/><path d="M32 8V30" stroke="#3fb37f" stroke-width="6" stroke-linecap="round"/>`,
   hourglass: `<path d="M20 10Q20 26 32 32 20 38 20 54H44Q44 38 32 32 44 26 44 10Z" fill="#fff4d6" ${line()}/>
     <path d="M24 52Q32 42 40 52Z" fill="#ffcf6b"/><path d="M16 8H48M16 56H48" ${line(4)}/>`,
+  bus: `<rect x="12" y="8" width="40" height="44" rx="10" fill="#ff8f8f" ${line()}/><rect x="18" y="15" width="28" height="16" rx="3" fill="#dff4ff"/>
+    <circle cx="22" cy="41" r="3.5" fill="#fff4b1"/><circle cx="42" cy="41" r="3.5" fill="#fff4b1"/>
+    <path d="M20 52v5M44 52v5" ${line(5)}/>`,
+  wifiOff: `<path d="M10 26Q32 6 54 26M18 35Q32 23 46 35M26 43Q32 38 38 43" fill="none" stroke="#b9b2bd" stroke-width="5" stroke-linecap="round"/>
+    <circle cx="32" cy="51" r="4.5" fill="#b9b2bd"/><path d="M12 10 52 56" stroke="#ff6b6b" stroke-width="5" stroke-linecap="round"/>`,
+  wifiWait: `<path d="M10 26Q32 6 54 26M18 35Q32 23 46 35M26 43Q32 38 38 43" fill="none" stroke="#c9c2cd" stroke-width="5" stroke-linecap="round"/>
+    <circle cx="32" cy="51" r="4.5" fill="#ffb347"/>`,
   wifi: `<path d="M10 26Q32 6 54 26M18 35Q32 23 46 35M26 43Q32 38 38 43" fill="none" stroke="#5aa9d6" stroke-width="5" stroke-linecap="round"/>
     <circle cx="32" cy="51" r="4.5" fill="#5aa9d6"/>`,
   refresh: `<path d="M49 24A18 18 0 1 0 50 40" fill="none" ${line(5)}/><path d="M51 10V25H36" fill="none" ${line(5)}/>`,
@@ -72,6 +79,7 @@ const icons = {
   toy0: ['ball', 72], toy1: ['bubbles', 72], bubble: ['bubbles', 84],
   stat_food: ['onigiri', 20], stat_mood: ['heart', 20], stat_energy: ['bolt', 20],
   charge: ['bolt', 22], usb: ['plug', 22],
+  nav_bus: ['bus', 32], wifi_on: ['wifi', 24], wifi_wait: ['wifiWait', 24], wifi_off: ['wifiOff', 24],
   set_bright: ['sun', 34], set_volume: ['speaker', 34], set_autooff: ['screen', 34], set_night: ['bellOff', 34],
   set_clock: ['clock', 34], set_start: ['power', 34], set_offline: ['hourglass', 34], set_sync: ['wifi', 34],
   set_reload: ['refresh', 34], set_info: ['info', 34], set_game: ['paw', 34], set_home: ['house', 34],

@@ -55,6 +55,8 @@ class Assets {
   String activeRoot();
   bool activate(const char *root);
   bool verifyPack(const char *root,String &error);
+  // Diagnostic: reads `count` chunks of `chunk` bytes from `path` (no hashing); 0 on error.
+  uint32_t benchRead(const char *path,size_t chunk,unsigned count);
 };
 extern Assets assets;
 

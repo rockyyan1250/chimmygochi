@@ -1,21 +1,29 @@
 import { execFileSync } from 'node:child_process';
-import { readFileSync, mkdirSync, cpSync, existsSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { readFileSync, mkdirSync, copyFileSync, existsSync, readdirSync, statSync } from 'node:fs';
+import { resolve, join } from 'node:path';
 import { cli, findPort, buildCache, sketchDir as sketch, includeDir } from './platform.mjs';
 const deps = JSON.parse(readFileSync('firmware/dependencies.json'));
+// Copy only files whose bytes changed: fresh timestamps make arduino-cli redo library
+// detection for the whole sketch, which turned small edits into 10-20 minute builds.
+function place(src, dst) {
+  const data = readFileSync(src);
+  if (existsSync(dst) && readFileSync(dst).equals(data)) return;
+  copyFileSync(src, dst);
+}
 mkdirSync(sketch, { recursive: true });
 if (includeDir !== resolve('firmware')) {
   mkdirSync(includeDir, { recursive: true });
-  cpSync('firmware/lv_conf.h', `${includeDir}/lv_conf.h`);
+  place('firmware/lv_conf.h', `${includeDir}/lv_conf.h`);
 }
-cpSync('firmware/ChimmyGoChi', sketch, { recursive: true });
-cpSync('firmware/ChimmyGoChi/generated/font_tc.c', `${sketch}/font_tc.c`);
+for (const f of readdirSync('firmware/ChimmyGoChi'))
+  if (statSync(join('firmware/ChimmyGoChi', f)).isFile()) place(join('firmware/ChimmyGoChi', f), join(sketch, f));
+place('firmware/ChimmyGoChi/generated/font_tc.c', `${sketch}/font_tc.c`);
 execFileSync(process.execPath, ['tools/icons.mjs'], { stdio: 'inherit' });
-cpSync('firmware/ChimmyGoChi/generated/icons.c', `${sketch}/icons.c`);
-cpSync('firmware/ChimmyGoChi/generated/icons.h', `${sketch}/icons.h`);
+place('firmware/ChimmyGoChi/generated/icons.c', `${sketch}/icons.c`);
+place('firmware/ChimmyGoChi/generated/icons.h', `${sketch}/icons.h`);
 for (const f of ['es8311.c', 'es8311.h', 'es8311_reg.h']) {
   if (!existsSync(`.deps/waveshare/${f}`)) throw Error('Run npm run setup first.');
-  cpSync(`.deps/waveshare/${f}`, `${sketch}/${f}`);
+  place(`.deps/waveshare/${f}`, `${sketch}/${f}`);
 }
 const args = ['--config-file', resolve('.deps/arduino-cli.yaml')];
 if (process.argv[2] === 'upload') {

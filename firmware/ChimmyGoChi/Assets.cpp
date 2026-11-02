@@ -1,6 +1,7 @@
 #include "Assets.h"
 #include <Preferences.h>
 #include <cstdio>
+#include <esp_timer.h>
 
 Assets assets;
 static constexpr const char *sounds[]={"tap","happy","eat","dress"};
@@ -154,6 +155,25 @@ bool Assets::load(const Request &r,AssetResult &result) {
   if(doc["walk"].is<JsonObject>()&&!parse(doc["walk"],pack->walk)) return fail(clipError);
   if(doc["sit"].is<JsonObject>()&&!parse(doc["sit"],pack->sit)) return fail(clipError);
   result.pack=pack.release();return true;
+}
+uint32_t Assets::benchRead(const char *path,size_t chunk,unsigned count) {
+  if(!ready||!path||!chunk||chunk>512*1024) return 0;
+  auto buf=static_cast<uint8_t *>(heap_caps_malloc(chunk,MALLOC_CAP_SPIRAM));
+  if(!buf) return 0;
+  File f;{SdGuard lock;f=SD.open(path);}
+  if(!f) {free(buf);return 0;}
+  const int64_t start=esp_timer_get_time();bool ok=true;
+  for(unsigned i=0;i<count&&ok;i++) {
+    size_t done=0;
+    while(done<chunk) {
+      size_t n;{SdGuard lock;n=f.read(buf+done,std::min<size_t>(16384,chunk-done));}
+      if(!n) {ok=false;break;}
+      done+=n;
+    }
+  }
+  const uint32_t us=uint32_t(esp_timer_get_time()-start);
+  {SdGuard lock;f.close();}
+  free(buf);return ok?us:0;
 }
 bool Assets::verifyPack(const char *root,String &error) {
   unsigned count=1;

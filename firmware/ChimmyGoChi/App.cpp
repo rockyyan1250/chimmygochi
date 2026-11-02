@@ -9,6 +9,10 @@
 #include "SaveStore.h"
 #include "Assets.h"
 #include "icons.h"
+#include "Kmb.h"
+#include "Net.h"
+#include "Bus.h"
+#include <WebServer.h>
 
 LV_FONT_DECLARE(font_tc);
 static game::State pet;
@@ -21,8 +25,12 @@ static uint32_t actionAt=0,toastUntil=0,frameCount=0,maxLoopUs=0;
 static std::unique_ptr<AssetPack> pack;
 static PackTransfer transfer;
 static lv_obj_t *screen=nullptr,*character=nullptr,*background=nullptr,*toast=nullptr;
-static lv_obj_t *clockLabel=nullptr,*infoLabel=nullptr,*stats[3]{},*settingsPanel=nullptr;
-static lv_obj_t *batteryBox=nullptr,*batteryLabel=nullptr,*batteryFill=nullptr,*powerIcon=nullptr;
+static lv_obj_t *clockLabel=nullptr,*dateLabel=nullptr,*infoLabel=nullptr,*stats[3]{},*settingsPanel=nullptr;
+// Bus screen: per line the stop, direction and next-bus labels.
+static lv_obj_t *busStop[bus::kLines]{},*busDest[bus::kLines]{},*busEta[bus::kLines]{};
+static uint32_t busRevision=0,busFetchAt=0,busMapAt=0;
+static int busBoard[bus::kLines]={-1,-1};  // line -> board index in the last batch
+static lv_obj_t *wifiIcon=nullptr,*batteryBox=nullptr,*batteryLabel=nullptr,*batteryFill=nullptr,*powerIcon=nullptr;
 static battery::Reading batteryReading{battery::State::Unavailable,-1};
 static bool batterySampled=false,usbPower=false,charging=false;
 static lv_img_dsc_t thumbImages[kMaxBackgrounds]{};
@@ -34,8 +42,6 @@ static char toastMessage[200]{};
 static tm timeEdit{};
 static lv_obj_t *timeFields[5]{};
 static int editField=0;
-static bool networkBusy=false;
-static uint32_t networkAt=0;
 static bool bubbleGame=false;
 static unsigned bubbleScore=0;
 static lv_obj_t *bubble=nullptr,*bubbleLabel=nullptr;
@@ -53,11 +59,11 @@ static uint32_t wanderUntil=0,lastWanderMs=0;
 static int lastTap=-1;
 
 // Page 2 and control 3 belonged to the removed clock mode; the numbers stay for the USB test tools.
-enum Page { Game=0,Ambient=1,Settings=3,Foods=4,Toys=5,Rooms=6,Status=7,SetTime=8 };
+enum Page { Game=0,Ambient=1,Settings=3,Foods=4,Toys=5,Rooms=6,Status=7,SetTime=8,WifiSetup=9,Bus=10,BusSetup=11 };
 enum Control { GoGame=1,GoAmbient,GoSettings=4,GoFoods,GoToys,GoRooms,Sleep,
   GoStatus,Back,Tap,Feed0=20,Play0=30,Room0=40,BrightnessDown=50,BrightnessUp,VolumeDown,VolumeUp,
   AutoOff,Hour24,NightMute,StartMode,OfflineCap,EditTime,TimePrev,TimeNext,TimeMinus,TimePlus,TimeSave,
-  Reload,Sync,Bubble,ResetConfirm,ResetYes };
+  Reload,Sync,Bubble,ResetConfirm,ResetYes,GoBus=70,GoBusSetup };
 static void showPage(int next);
 static void notify(const char *message,uint32_t duration=4000);
 static void setAction(int next);
@@ -96,6 +102,7 @@ static lv_obj_t *box(lv_obj_t *parent,int x,int y,int w,int h,uint32_t bg,int ra
 }
 // Pill at the top centre (away from the panel's rounded corners): power mark, battery, percent.
 static void initBatteryIndicator() {
+  wifiIcon=lv_img_create(lv_layer_top());lv_obj_set_pos(wifiIcon,128,24);lv_img_set_src(wifiIcon,&icon_wifi_off);
   batteryBox=box(lv_layer_top(),164,16,152,44,0xfffaf3,LV_RADIUS_CIRCLE);
   lv_obj_set_style_bg_opa(batteryBox,LV_OPA_90,0);
   powerIcon=lv_img_create(batteryBox);lv_obj_set_pos(powerIcon,10,11);lv_obj_add_flag(powerIcon,LV_OBJ_FLAG_HIDDEN);
@@ -122,6 +129,8 @@ static void updateBattery() {
   }
   // Plug: USB power only (full, paused for heat, or charge limits unverified); bolt: charging.
   chargeGuard();
+  const net::State ws=net::state();
+  lv_img_set_src(wifiIcon,ws==net::State::Connected?&icon_wifi_on:ws==net::State::Connecting?&icon_wifi_wait:&icon_wifi_off);
   const bool usb=pmuOk&&pmu.isVbusIn(),charge=pmuOk&&pmu.isCharging();
   if(!batterySampled||usb!=usbPower||charge!=charging) {
     usbPower=usb;charging=charge;
@@ -200,12 +209,14 @@ static void drawFrame(uint32_t frame) {
 // a floor band whose lowest feet line (y~380) stays above the clock.
 static int charSize() {return pack?pack->atlasHeader.width:256;}
 static int gameY() {return 356-charSize();}
+static int busZoom=154;  // 256 = 100%; bus page CHIMMY, sized to the floor left under the cards
+static int busTop(int feetY) {const int h=charSize()/2;return feetY-h-(charSize()-4-h)*busZoom/256;}
 static int restX() {return (480-charSize())/2;}
 static int restY() {return 352-charSize()+16;}
-static int homeY() {return page==Game?gameY():restY();}
+static int homeY() {return page==Game?gameY():page==Bus?busTop(468):restY();}
 // Floor band per page: on the game page the feet stay above the stat chips (y~356).
-static int wanderMinY() {return page==Game?gameY()-28:restY()-40;}
-static int wanderMaxY() {return page==Game?gameY():restY()+28;}
+static int wanderMinY() {return page==Game?gameY()-28:page==Bus?busTop(460):restY()-40;}  // head stays below the cards
+static int wanderMaxY() {return page==Game?gameY():page==Bus?busTop(468):restY()-8;}  // standby: feet above the date
 static void resetWander() {
   wander=Wander::Rest;wanderUntil=millis()+2500;lastWanderMs=millis();
   wanderX=targetX=restX();wanderY=targetY=homeY();
@@ -224,7 +235,8 @@ static void wanderTick() {
   } else if(elapsed(wanderUntil)) {
     // The frame's transparent margin may leave the screen; the body stays inside. Each walk
     // covers at least 120px, turning back when the far side is too close.
-    const int minX=-30,maxX=480-charSize()+30,minY=wanderMinY(),maxY=wanderMaxY();
+    // Bus page: the smaller body may go further out but stays clear of the rounded corners.
+    const int edge=page==Bus?30+(256-busZoom)/10:30,minX=-edge,maxX=480-charSize()+edge,minY=wanderMinY(),maxY=wanderMaxY();
     // int() keeps the negative minX out of unsigned arithmetic with esp_random().
     auto random=[](int n){return int(esp_random()%unsigned(n));};
     targetX=minX+random(maxX-minX+1);
@@ -261,6 +273,11 @@ static void makeScene() {
 }
 // Layout keeps controls clear of the panel's rounded corners (radius ~48px): the top row
 // spans x=70..410 and the bottom row x=74..406, leaving the middle for the character.
+// A soft pill behind the clock keeps it readable on dark rooms (night, sky).
+static void clockBackdrop(lv_obj_t *l) {
+  lv_obj_set_style_bg_color(l,color(0xfffaf3),0);lv_obj_set_style_bg_opa(l,LV_OPA_80,0);
+  lv_obj_set_style_radius(l,LV_RADIUS_CIRCLE,0);lv_obj_set_style_pad_ver(l,2,0);
+}
 static void topRow(bool home) {
   if(home) {
     iconButton(screen,pet.sleeping?&icon_wake:&icon_sleep,70,12,48,48,Sleep,0xede7fb);
@@ -275,13 +292,15 @@ static void switchRow(lv_obj_t *panel,int y,const lv_img_dsc_t *icon,bool on,int
   lv_obj_add_event_cb(sw,event,LV_EVENT_CLICKED,reinterpret_cast<void *>(static_cast<intptr_t>(id)));
 }
 static void showPage(int next) {
+  if(page==WifiSetup&&next!=WifiSetup) net::stopPortal();  // the setup AP lives only on its page
   const lv_coord_t keepScroll=page==Settings&&next==Settings&&settingsPanel?lv_obj_get_scroll_y(settingsPanel):0;
   auto oldScreen=screen;
   screen=lv_obj_create(nullptr);
   lv_obj_clear_flag(screen,LV_OBJ_FLAG_SCROLLABLE);lv_obj_set_style_bg_color(screen,color(0xf3efe8),0);
   lv_scr_load(screen);
   if(oldScreen)lv_obj_del(oldScreen);
-  page=next;character=background=fallback=fallbackBody=clockLabel=infoLabel=bubble=bubbleLabel=settingsPanel=nullptr;
+  page=next;character=background=fallback=fallbackBody=clockLabel=dateLabel=infoLabel=bubble=bubbleLabel=settingsPanel=nullptr;
+  for(unsigned i=0;i<bus::kLines;i++) busStop[i]=busDest[i]=busEta[i]=nullptr;
   toast=nullptr;for(auto &p:stats)p=nullptr;
   bubbleGame=false;stopSound();action=pet.sleeping?4:0;actionAt=millis();lastFrame=UINT32_MAX;
   if(page==Game||page==Ambient) {
@@ -305,11 +324,67 @@ static void showPage(int next) {
       const uint32_t tints[]={0xffe2bd,0xc0e5e2,0xded6f5,0xf7f3ed};
       for(int i=0;i<4;i++) iconButton(screen,icons2[i],74+i*84,396,76,52,ids[i],tints[i]);
     } else {
-      clockLabel=label(screen,"--:--",110,398,220);
+      dateLabel=label(screen,"",120,360,240,0x594761);clockBackdrop(dateLabel);
+      lv_obj_set_style_text_align(dateLabel,LV_TEXT_ALIGN_CENTER,0);
+      clockLabel=label(screen,"--:--",150,400,180);clockBackdrop(clockLabel);
+      lv_obj_update_layout(clockLabel);
+      const int rowY=lv_obj_get_y(clockLabel)+lv_obj_get_height(clockLabel)/2-26;
       lv_obj_set_style_text_font(clockLabel,&lv_font_montserrat_48,0);
       lv_obj_set_style_text_align(clockLabel,LV_TEXT_ALIGN_CENTER,0);
-      iconButton(screen,&icon_nav_game,346,400,64,48,GoGame,0xf7f3ed);
+      iconButton(screen,&icon_nav_bus,70,rowY,64,52,GoBus,0xf7f3ed);
+      iconButton(screen,&icon_nav_game,346,rowY,64,52,GoGame,0xf7f3ed);
     }
+  } else if(page==Bus) {
+    // Next buses for the configured lines (or one hint card), the time and date, and CHIMMY
+    // wandering the floor below, as large as the space under the cards allows.
+    unsigned shown=0;
+    for(unsigned i=0;i<bus::kLines;i++) shown+=bus::used(i);
+    const unsigned cards=shown?shown:1;
+    const int cardsBottom=146+int(cards)*92-4;
+    // Standing height ~0.855 of the frame; head clears the cards with feet at y=460.
+    busZoom=std::min(256,(460-cardsBottom-6)*256*100/(charSize()*855/10));
+    resetWander();
+    makeScene();
+    if(character) {
+      if(busZoom<256) lv_img_set_zoom(character,busZoom);
+      lv_obj_set_pos(character,restX(),homeY());
+      drawFrame(clipFor(action).frames[0]);
+    }
+    iconButton(screen,&icon_back,70,12,48,48,Back,0xede7fb);
+    iconButton(screen,&icon_nav_settings,362,12,48,48,GoBusSetup,0xf3f0ea);
+    auto pill=box(screen,140,62,200,80,0xfffaf3,28);lv_obj_set_style_bg_opa(pill,LV_OPA_80,0);
+    clockLabel=label(pill,"--:--",0,-4,200);
+    lv_obj_set_style_text_font(clockLabel,&lv_font_montserrat_48,0);lv_obj_set_style_text_align(clockLabel,LV_TEXT_ALIGN_CENTER,0);
+    dateLabel=label(pill,"",0,46,200,0x594761);lv_obj_set_style_text_align(dateLabel,LV_TEXT_ALIGN_CENTER,0);
+    for(unsigned i=0,slot=0;i<bus::kLines;i++) {
+      if(!bus::used(i)&&(shown||i)) continue;  // unused slots hidden; one hint card when none is set
+      auto card=box(screen,40,146+int(slot++)*92,400,88,0xfffaf3,20);lv_obj_set_style_bg_opa(card,LV_OPA_90,0);
+      const auto &l=bus::line(i);
+      auto badge=box(card,10,15,72,58,0xe85a5a,16);
+      auto num=lv_label_create(badge);lv_label_set_text(num,bus::used(i)?l.route:"-");
+      lv_obj_set_style_text_font(num,&lv_font_montserrat_24,0);lv_obj_set_style_text_color(num,color(0xffffff),0);lv_obj_center(num);
+      busStop[i]=label(card,bus::used(i)?l.stopName:"未設定路線",92,-1,300);
+      busDest[i]=label(card,"",92,27,300,0x7a6e7f);
+      busEta[i]=label(card,"",92,55,300,0xd15878);
+      for(auto t:{busStop[i],busDest[i],busEta[i]}) lv_label_set_long_mode(t,LV_LABEL_LONG_DOT);
+      if(bus::used(i)) {char b[80];snprintf(b,sizeof(b),"往 %s",l.dest);lv_label_set_text(busDest[i],b);}
+      else lv_label_set_text(busDest[i],"撳右上角設定");
+    }
+    busRevision=0;  // fetch at once
+  } else if(page==BusSetup) {
+    iconButton(screen,&icon_back,70,12,48,48,Back,0xede7fb);
+    auto title=label(screen,"巴士路線設定",90,72,300);lv_obj_set_style_text_align(title,LV_TEXT_ALIGN_CENTER,0);
+    const String ip=net::ip();
+    if(ip.length()) {
+      // The PIN rides in the URL, so only someone who can see this screen can change the lines.
+      char url[64];snprintf(url,sizeof(url),"http://%s/bus?pin=%s",ip.c_str(),bus::pin());
+      auto qr=lv_qrcode_create(screen,196,color(0x2b2530),color(0xffffff));
+      lv_obj_set_pos(qr,142,112);lv_obj_set_style_border_color(qr,color(0xffffff),0);lv_obj_set_style_border_width(qr,8,0);
+      lv_qrcode_update(qr,url,strlen(url));
+      char b[120];snprintf(b,sizeof(b),"用手機掃描 QR Code\n（手機要連同一個 Wi-Fi）\nPIN %s",bus::pin());
+      infoLabel=label(screen,b,60,326,360);
+    } else infoLabel=label(screen,"請先喺設定度連接 Wi-Fi",60,200,360);
+    lv_obj_set_style_text_align(infoLabel,LV_TEXT_ALIGN_CENTER,0);
   } else if(page==Foods||page==Toys) {
     topRow(false);
     if(page==Foods) {
@@ -380,6 +455,16 @@ static void showPage(int next) {
     const int ids[]={TimePrev,TimeNext,TimeMinus,TimePlus};
     for(int i=0;i<4;i++) iconButton(screen,icons[i],48+i*98,214,88,60,ids[i],0xf7f3ed);
     iconButton(screen,&icon_ok,150,312,180,64,TimeSave,0xc0e5e2);
+  } else if(page==WifiSetup) {
+    topRow(false);
+    // Phone scans the QR to join CHIMMY's own Wi-Fi; the setup page then opens by itself.
+    auto title=label(screen,"Wi-Fi 設定",90,72,300);lv_obj_set_style_text_align(title,LV_TEXT_ALIGN_CENTER,0);
+    if(net::startPortal()) {
+      auto qr=lv_qrcode_create(screen,196,color(0x2b2530),color(0xffffff));
+      lv_obj_set_pos(qr,142,112);lv_obj_set_style_border_color(qr,color(0xffffff),0);lv_obj_set_style_border_width(qr,8,0);
+      lv_qrcode_update(qr,net::portalQr(),strlen(net::portalQr()));
+    }
+    infoLabel=label(screen,"",60,328,360);lv_obj_set_style_text_align(infoLabel,LV_TEXT_ALIGN_CENTER,0);
   }
   toast=label(screen,toastMessage,70,82,340,0x594761);
   lv_obj_set_style_text_align(toast,LV_TEXT_ALIGN_CENTER,0);lv_obj_set_style_radius(toast,14,0);
@@ -413,10 +498,6 @@ static bool setTime(int64_t epoch) {
   if(!saveLocked&&!saveNow()) return false;
   if(!rtc) notify("時間已設定，RTC寫入失敗",6000);
   return true;
-}
-static void syncTime() {
-  if(networkBusy) {notify("連接網絡中");return;}
-  WiFi.mode(WIFI_STA);WiFi.begin();networkBusy=true;networkAt=millis();notify("連接網絡中");
 }
 static void control(int id) {
   if(transfer.active) {notify("USB素材傳輸中");return;}
@@ -455,7 +536,7 @@ static void control(int id) {
     case GoRooms:if(canAct())showPage(Rooms);break;
     case GoStatus:showPage(Status);break;
     case Tap:
-      if(page<=Ambient&&canAct()) {
+      if((page<=Ambient||page==Bus)&&canAct()) {
         // A random reaction, never the same one twice in a row.
         if(pet.sleeping) setAction(4);
         else if(pack&&pack->tapCount) {
@@ -465,7 +546,9 @@ static void control(int id) {
         } else setAction(pet.bond>=40?7:1);
       }
       break;
-    case Back:showPage(page==Status||page==SetTime?Settings:Game);break;
+    case Back:showPage(page==Status||page==SetTime||page==WifiSetup?Settings:page==Bus?Ambient:page==BusSetup?Bus:Game);break;
+    case GoBus:showPage(Bus);break;
+    case GoBusSetup:showPage(BusSetup);break;
     case Sleep:
       if(!canAct())break;advanceNow();pet.sleeping=!pet.sleeping;pet.sleepSeconds=0;changed();
       showPage(page);break;
@@ -501,7 +584,7 @@ static void control(int id) {
       else showPage(Settings);break;
     }
     case Reload:requestAssets();break;
-    case Sync:syncTime();break;
+    case Sync:showPage(WifiSetup);break;
     case Bubble:
       if(!bubbleGame)break;
       if(++bubbleScore>=5) {
@@ -523,7 +606,7 @@ static void control(int id) {
   }
 }
 static void updateAnimation() {
-  if((page!=Game&&page!=Ambient)||!displayOn||transfer.active) return;
+  if((page!=Game&&page!=Ambient&&page!=Bus)||!displayOn||transfer.active) return;
   const uint32_t delta=millis()-actionAt;
   if(pack&&character) {
     wanderTick();
@@ -548,6 +631,47 @@ static void updateAnimation() {
     frameCount++;
   }
 }
+// Bus screen: fetch every 30s (at once after the phone saves new lines); minutes count down locally.
+static void busTick() {
+  const bool online=net::state()==net::State::Connected;
+  const bool changed=busRevision!=bus::revision();
+  if(online&&!kmb::busy()&&(changed||millis()-busFetchAt>30000)) {
+    kmb::Request q[bus::kLines]{};unsigned n=0;
+    for(unsigned i=0;i<bus::kLines;i++) {
+      busBoard[i]=-1;if(!bus::used(i)) continue;
+      const auto &l=bus::line(i);auto &r=q[n];
+      snprintf(r.route,sizeof(r.route),"%s",l.route);snprintf(r.stop,sizeof(r.stop),"%s",l.stop);
+      r.bound=l.bound;r.serviceType=l.serviceType;busBoard[i]=n++;
+    }
+    if(changed) busMapAt=millis();  // older batches no longer match the lines
+    if(!n||kmb::start(q,n)) {busFetchAt=millis();busRevision=bus::revision();}
+  }
+  const auto r=kmb::last();
+  const bool fresh=r.done&&int32_t(r.finishedMs-busMapAt)>=0;
+  const int64_t now=nowUtc();
+  for(unsigned i=0;i<bus::kLines;i++) {
+    if(!busEta[i]||!bus::used(i)) continue;
+    char b[96]="等緊資料…";
+    if(!online) snprintf(b,sizeof(b),"Wi-Fi 未連接");
+    else if(fresh&&busBoard[i]>=0&&busBoard[i]<r.boardCount) {
+      const auto &bd=r.boards[busBoard[i]];
+      if(!bd.ok) snprintf(b,sizeof(b),"暫時攞唔到資料");
+      else if(!bd.count) snprintf(b,sizeof(b),"暫時冇班次");
+      else if(!bd.arrivals[0].eta) snprintf(b,sizeof(b),"%s",bd.arrivals[0].remark[0]?bd.arrivals[0].remark:"暫時冇班次");
+      else {
+        // First bus in full ("6 分鐘" / "即將到站"), then the later ones as bare minutes.
+        int used=0;
+        for(unsigned k=0;k<bd.count&&bd.arrivals[k].eta;k++) {
+          const int mins=int((bd.arrivals[k].eta-now+59)/60);
+          if(!k) used=mins<=0?snprintf(b,sizeof(b),"即將到站"):snprintf(b,sizeof(b),"%d 分鐘",mins);
+          else used+=snprintf(b+used,sizeof(b)-used," · %d",std::max(0,mins));
+          if(used>=int(sizeof(b))) break;
+        }
+      }
+    }
+    if(strcmp(lv_label_get_text(busEta[i]),b)) lv_label_set_text(busEta[i],b);
+  }
+}
 static void updateLabels() {
   const int64_t utc=nowUtc();time_t epoch=utc;tm local{};
   if(utc)localtime_r(&epoch,&local);
@@ -556,9 +680,25 @@ static void updateLabels() {
     if(utc)snprintf(buf,sizeof(buf),"%02d:%02d",pet.hour24?local.tm_hour:((local.tm_hour+11)%12+1),local.tm_min);
     lv_label_set_text(clockLabel,buf);
   }
+  if(dateLabel) {
+    static const char *days[]={"日","一","二","三","四","五","六"};
+    char buf[40]="";
+    if(utc)snprintf(buf,sizeof(buf),"%d月%d日 星期%s",local.tm_mon+1,local.tm_mday,days[local.tm_wday]);
+    if(strcmp(lv_label_get_text(dateLabel),buf))lv_label_set_text(dateLabel,buf);
+  }
+  if(page==Bus) busTick();
   if(page==Game) {
     const int values[]={pet.hunger,pet.mood,pet.energy};
     for(int i=0;i<3;i++)if(stats[i])lv_bar_set_value(stats[i],values[i]/100,LV_ANIM_OFF);
+  }
+  if(infoLabel&&page==WifiSetup) {
+    char b[160];const auto j=net::joinState();
+    if(!net::portalActive()&&j!=net::Join::Joined) snprintf(b,sizeof(b),"開唔到設定，請返回再試");
+    else if(j==net::Join::Trying) snprintf(b,sizeof(b),"連接緊…");
+    else if(j==net::Join::Joined) snprintf(b,sizeof(b),"已連接：%s",net::ssid().c_str());
+    else if(j==net::Join::Rejected) snprintf(b,sizeof(b),"連唔到，請檢查密碼再試");
+    else snprintf(b,sizeof(b),"用手機掃描 QR Code\n連接後會自動打開設定頁");
+    lv_label_set_text(infoLabel,b);
   }
   if(infoLabel&&page==Status) {
     char b[600];
@@ -602,21 +742,18 @@ static void powerTick() {
     else display.setBrightness(idle>30000?std::max<int>(20,pet.brightness/3):pet.brightness);
   }
 }
+// Wi-Fi stays up (remembered networks); every new connection also re-syncs the clock over NTP.
 static void networkTick() {
-  if(!networkBusy)return;
+  net::tick();
   static bool requested=false;
-  if(WiFi.status()==WL_CONNECTED&&!requested) {
+  if(net::connectedOnce()) {
     configTime(0,0,"pool.ntp.org","time.cloudflare.com");setenv("TZ","HKT-8",1);tzset();requested=true;
   }
   // SNTP sync status, rather than an already valid RTC time, determines success.
   extern bool networkSynced();
   if(requested&&networkSynced()) {
-    clockQuality=3;const bool rtc=rtcWrite(nowUtc());changed();
-    if(saveNow())notify(rtc?"時間已同步":"時間已同步，RTC寫入失敗");
-    networkBusy=false;requested=false;WiFi.disconnect(false,false);WiFi.mode(WIFI_OFF);
-  } else if(millis()-networkAt>15000) {
-    notify("同步失敗：請用USB設定網絡",7000);networkBusy=false;requested=false;
-    WiFi.disconnect(false,false);WiFi.mode(WIFI_OFF);
+    requested=false;clockQuality=3;const bool rtc=rtcWrite(nowUtc());changed();
+    if(!rtc)notify("時間已同步，RTC寫入失敗");
   }
 }
 #include <esp_sntp.h>
@@ -648,6 +785,8 @@ static void command(JsonDocument &request,JsonDocument &reply) {
       reply["battery_clickable"]=lv_obj_has_flag(batteryBox,LV_OBJ_FLAG_CLICKABLE)||
         lv_obj_has_flag(batteryLabel,LV_OBJ_FLAG_CLICKABLE);
     }
+    reply["wifi_state"]=int(net::state());reply["wifi_ssid"]=net::ssid();reply["wifi_rssi"]=net::rssi();
+    reply["wifi_saved"]=net::savedCount();reply["portal"]=net::portalActive();reply["portal_join"]=int(net::joinState());
     reply["battery_sample_ms"]=batteryReadAt;reply["usb_power"]=usbPower;reply["charging"]=charging;
     reply["utc"]=nowUtc();int64_t rtc=0;reply["rtc_valid"]=rtcRead(rtc);reply["rtc_utc"]=rtc;
     reply["save_generation"]=pet.generation;reply["save_locked"]=saveLocked;reply["dirty"]=dirty;
@@ -681,14 +820,44 @@ static void command(JsonDocument &request,JsonDocument &reply) {
   else if(strcmp(cmd,"control")==0) {
     const int value=request["value"]|0;
     if(!request["value"].is<int>()||!((value>=GoGame&&value<=Tap)||(value>=Feed0&&value<Feed0+6)||
-       (value>=Play0&&value<Play0+2)||(value>=Room0&&value<Room0+int(kMaxBackgrounds))||(value>=BrightnessDown&&value<=ResetConfirm)))
+       (value>=Play0&&value<Play0+2)||(value>=Room0&&value<Room0+int(kMaxBackgrounds))||(value>=BrightnessDown&&value<=ResetConfirm)||value==GoBus||value==GoBusSetup))
       error="invalid control";
     else {lastInput=millis();control(value);ok=true;}
   } else if(strcmp(cmd,"wifi")==0) {
     const char *ssid=request["ssid"],*password=request["password"];
     if(!ssid||!*ssid||strlen(ssid)>32||!password||strlen(password)>63)error="invalid WiFi configuration";
-    else {WiFi.persistent(true);WiFi.mode(WIFI_STA);WiFi.begin(ssid,password);
-      networkBusy=true;networkAt=millis();ok=true;}
+    else ok=net::addNetwork(ssid,password);
+  } else if(strcmp(cmd,"kmb")==0) {
+    // Diagnostic fetch of one stop: {stop, route, service_type, bound}; poll with kmb_result.
+    kmb::Request q{};snprintf(q.route,sizeof(q.route),"%s",request["route"]|"");
+    snprintf(q.stop,sizeof(q.stop),"%s",request["stop"]|"");q.serviceType=request["service_type"]|1;
+    const char *b=request["bound"]|"";q.bound=b[0];
+    ok=kmb::start(&q,1);
+    if(!ok)error="kmb busy, offline or invalid stop/route";
+  } else if(strcmp(cmd,"kmb_result")==0) {
+    // Not const: ArduinoJson copies char* strings but stores const char* by pointer, and r dies first.
+    auto r=kmb::last();ok=true;
+    reply["busy"]=kmb::busy();reply["done"]=r.done;reply["request_ms"]=r.requestMs;
+    reply["heap_before"]=r.heapBefore;reply["heap_low_after"]=r.heapLowAfter;reply["stack_free"]=r.stackFree;
+    reply["max_loop_us"]=maxLoopUs;
+    JsonArray boards=reply["boards"].to<JsonArray>();
+    for(unsigned b=0;b<r.boardCount;b++) {
+      auto &bd=r.boards[b];JsonObject o=boards.add<JsonObject>();
+      o["ok"]=bd.ok;o["http"]=bd.http;o["error"]=(char *)bd.error;
+      JsonArray list=o["arrivals"].to<JsonArray>();
+      for(unsigned i=0;i<bd.count;i++) {
+        JsonObject a=list.add<JsonObject>();a["dest"]=(char *)bd.arrivals[i].dest;a["remark"]=(char *)bd.arrivals[i].remark;
+        a["minutes"]=bd.arrivals[i].eta?(bd.arrivals[i].eta-nowUtc())/60:-1;
+      }
+    }
+  } else if(strcmp(cmd,"sd_bench")==0) {
+    // v0.3 spike S3: read the pack atlas in frame-sized chunks.
+    const size_t chunk=request["chunk"]|248832;const unsigned count=request["count"]|4;
+    const String path=String(pack?pack->root:"")+"/chimmy.cga";
+    const uint32_t us=assets.benchRead(path.c_str(),chunk,count);
+    ok=us>0;if(!ok)error="bench read failed";
+    reply["us"]=us;reply["bytes"]=uint32_t(chunk*count);reply["kb_per_s"]=us?uint32_t(uint64_t(chunk)*count*1000000/1024/us):0;
+    reply["ms_per_chunk"]=us/1000.0/count;
   } else if(strcmp(cmd,"reload")==0) {requestAssets();ok=assetLoading;if(!ok)error="cannot load pack";}
   else if(strcmp(cmd,"pack_begin")==0) {
     if(assetLoading)error="asset worker busy";
@@ -761,6 +930,7 @@ void setup() {
   if(pet.startMode==game::Mode::Clock) pet.startMode=game::Mode::Ambient;  // clock mode was removed
   lastTickUs=esp_timer_get_time();lastInput=millis();
   Serial.println("INIT SD");
+  net::begin();bus::begin();bus::attach(net::web());
   assets.begin();showPage(pet.startMode==game::Mode::Game?Game:Ambient);
   if(saveLocked)notify("資料損壞或保存初始化失敗：請檢查設定",15000);
   else {
